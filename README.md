@@ -79,17 +79,23 @@ It interactively:
 2. Optionally creates a new sudo user and locks the old one's password
    (prompts before locking anything)
 3. Optionally sets a new hostname
-4. Installs and enables **ufw**, default-deny incoming, opens SSH (22) and
+4. Optionally scans for nearby Wi-Fi networks (via `nmcli`) and connects to
+   one you pick, with a choice of DHCP or a static IP (address, gateway,
+   DNS) — then verifies the link came up and that it can reach the
+   internet
+5. Installs and enables **ufw**, default-deny incoming, opens SSH (22) and
    the dashboard port (5000) — optionally restricted to a LAN subnet you
    specify
-5. Hardens `sshd`: disables root login, keeps **password auth on** (as
+6. Hardens `sshd`: disables root login, keeps **password auth on** (as
    requested — fail2ban covers brute-force risk), tightens `MaxAuthTries`
    and `LoginGraceTime`
-6. Installs and enables **fail2ban** with an `sshd` jail (5 tries / 10 min →
+7. Installs and enables **fail2ban** with an `sshd` jail (5 tries / 10 min →
    1 hour ban)
-7. Enables **unattended-upgrades** for automatic security patches
+8. Enables **unattended-upgrades** for automatic security patches
 
-Reboot when it finishes, then log back in as whichever user you kept.
+At the end it prints the dashboard URL (`http://<hostname>.local:<port>/`,
+plus the Wi-Fi IP if configured) for once you've deployed the app. Reboot
+when it finishes, then log back in as whichever user you kept.
 
 ### Step 2 — `scripts/deploy-dashboard.sh` (installs + boots to kiosk)
 
