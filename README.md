@@ -125,24 +125,31 @@ nothing that fetches packages runs until a connection is confirmed:
    IP (address, gateway, DNS) — retries if it fails, and refuses to
    continue until a connection is confirmed working
 2. Enables **SSH**
-3. Updates and upgrades all system packages
-4. Installs security tooling (`ufw`, `fail2ban`, `unattended-upgrades`,
+3. **Optionally removes pre-installed bloat** (Raspberry Pi Connect,
+   LibreOffice, Wolfram Engine, Scratch, Minecraft, Sonic Pi, Thonny,
+   Node-RED, Claws Mail) — only removes whichever of those are actually
+   present (a no-op on Lite images), asks first, default yes
+4. Updates and upgrades all system packages
+5. Installs security tooling (`ufw`, `fail2ban`, `unattended-upgrades`,
    `git`, `curl`)
-5. Optionally creates a new sudo user and locks the old one's password
-   (prompts before locking anything)
-6. Optionally sets a new hostname
-7. Installs and enables **ufw**, default-deny incoming, opens SSH (22) and
+6. **Admin user/password — fully optional**: asks whether to create a new
+   sudo user (and, if so, whether to lock the old one's login once you've
+   confirmed the new one works); if you say no, asks separately whether to
+   change the current user's password instead. Answer no to both to leave
+   accounts untouched entirely.
+7. Optionally sets a new hostname
+8. Installs and enables **ufw**, default-deny incoming, opens SSH (22) and
    the dashboard port (5000) — optionally restricted to a LAN subnet you
    specify
-8. Hardens `sshd`: disables root login, keeps **password auth on** (as
+9. Hardens `sshd`: disables root login, keeps **password auth on** (as
    requested — fail2ban covers brute-force risk), tightens `MaxAuthTries`
    and `LoginGraceTime`
-9. Installs and enables **fail2ban** with an `sshd` jail (5 tries / 10 min →
-   1 hour ban)
-10. Enables **unattended-upgrades** for automatic security patches
-11. Prints a summary (firewall status, fail2ban status, Wi-Fi IP if
+10. Installs and enables **fail2ban** with an `sshd` jail (5 tries / 10 min
+    → 1 hour ban)
+11. Enables **unattended-upgrades** for automatic security patches
+12. Prints a summary (firewall status, fail2ban status, Wi-Fi IP if
     configured)
-12. **Installs the dashboard**: if it's not already running from inside a
+13. **Installs the dashboard**: if it's not already running from inside a
     clone of this repo, clones one; either way it then hands off to
     `scripts/deploy-dashboard.sh` automatically — see below for what that
     does. No second script to run by hand.
@@ -177,7 +184,11 @@ It:
    headless — see below)
 2. Clones (or pulls) this repo into `~/currency-dashboard`
 3. Creates `data.json`/`config.py`/`scripts/auto-update.conf` from their
-   templates if they don't already exist (never overwrites them)
+   templates if they don't already exist (never overwrites them). The
+   first time `config.py` is created, **optionally** asks whether to set
+   the admin panel password right now (asked twice, silently) instead of
+   leaving the placeholder — skip it and change `ADMIN_PASSWORD` by hand
+   later if you'd rather
 4. Creates a venv and installs `requirements.txt`
 5. Generates the self-signed HTTPS cert if needed (`scripts/generate-cert.sh`
    — see "HTTPS for the admin panel" below)

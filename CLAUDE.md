@@ -49,20 +49,43 @@ scripts/provision-pi.sh       The one script for a fresh SD card. Network
                                FIRST (checks for existing internet, else
                                loops on Wi-Fi via nmcli until connected —
                                apt/git both need it and nothing installs
-                               before it's confirmed), then: enable sshd,
-                               apt update/upgrade, new sudo user, hostname,
-                               ufw firewall, sshd hardening, fail2ban,
-                               unattended-upgrades (security-only origins).
-                               Finally installs the dashboard: if not
-                               already run from inside a clone of this repo
-                               (detected via a sibling deploy-dashboard.sh),
-                               clones one, then execs into
-                               deploy-dashboard.sh. Works both copied alone
-                               onto a fresh card and run from inside an
-                               already-cloned checkout.
+                               before it's confirmed), enable sshd, then
+                               OPTIONALLY purges pre-installed bloat
+                               (rpi-connect, LibreOffice, Wolfram, Scratch,
+                               Minecraft, Sonic Pi, Thonny, Node-RED, Claws
+                               Mail — dpkg -s-checked first, so it's a
+                               no-op on Lite images / already-absent
+                               packages) before the apt update/upgrade, so
+                               nothing gets upgraded just to be removed a
+                               step later. New sudo user AND password
+                               change are both independently optional
+                               (asks "create a new user? [y/N]"; if no,
+                               separately asks "change the current
+                               password? [y/N]" — answering no to both
+                               leaves credentials untouched). Then:
+                               hostname, ufw firewall, sshd hardening,
+                               fail2ban, unattended-upgrades (security-only
+                               origins). Finally installs the dashboard: if
+                               not already run from inside a clone of this
+                               repo (detected via a sibling
+                               deploy-dashboard.sh), clones one, then execs
+                               into deploy-dashboard.sh. Works both copied
+                               alone onto a fresh card and run from inside
+                               an already-cloned checkout.
 scripts/deploy-dashboard.sh   Clones the repo, creates data.json/config.py/
                                auto-update.conf from their templates if
-                               missing, builds the venv, generates the HTTPS
+                               missing — the first time config.py is
+                               created, OPTIONALLY prompts (twice, silent)
+                               for a real admin password instead of leaving
+                               the placeholder, written via a small python3
+                               heredoc using repr() + explicit UTF-8
+                               encoding (not sed — needs to handle quotes/
+                               backslashes/non-ASCII correctly; a Windows-
+                               local test caught a real UnicodeEncodeError
+                               from an unspecified encoding before that was
+                               added, keep the encoding="utf-8" args on
+                               both read_text/write_text if you touch this)
+                               — then builds the venv, generates the HTTPS
                                cert, installs the systemd service (with
                                APP_PORT/HTTPS_PORT env vars), opens the HTTPS
                                port through ufw, installs the auto-updater
@@ -78,7 +101,10 @@ scripts/deploy-dashboard.sh   Clones the repo, creates data.json/config.py/
                                monitor attached at boot. Called
                                automatically by provision-pi.sh, but also
                                safe to run standalone to update an existing
-                               install.
+                               install — this ONE script already does
+                               everything for HTTPS (cert gen) and
+                               auto-update (installs the timer); there is
+                               no separate step anyone needs to run by hand.
 scripts/generate-cert.sh      Generates/renews the self-signed HTTPS cert
                                (SAN = current hostname, hostname.local,
                                localhost, current LAN IP, 127.0.0.1).

@@ -130,7 +130,7 @@ connect_wifi() {
   fi
 }
 
-log "1/12 Network connectivity — apt and git both need this before anything else can run"
+log "1/13 Network connectivity — apt and git both need this before anything else can run"
 WIFI_IP=""
 if check_internet; then
   log "Internet already reachable (Ethernet, or Wi-Fi already configured)."
@@ -161,23 +161,61 @@ if ! check_internet; then
 fi
 
 # ---------------------------------------------------------------------------
-log "2/12 Enabling SSH"
+log "2/13 Enabling SSH"
 sudo systemctl enable --now ssh 2>/dev/null || sudo systemctl enable --now sshd 2>/dev/null || \
   warn "Could not find an ssh/sshd service to enable — SSH may already be active, or install openssh-server."
 
-log "3/12 Updating system packages (this can take a while on first boot)"
+# ---------------------------------------------------------------------------
+log "3/13 Removing unneeded pre-installed packages"
+# Only relevant on Raspberry Pi OS "Desktop"/"Full" images, which bundle a
+# bunch of apps a dedicated kiosk display never uses. Each is checked with
+# dpkg -s first, so this is a no-op on Lite (none of these are installed
+# there) and never errors on a package name that isn't present.
+BLOAT_PACKAGES=(
+  rpi-connect rpi-connect-lite
+  wolfram-engine wolframscript
+  scratch scratch2 scratch3
+  minecraft-pi
+  sonic-pi
+  thonny
+  nodered
+  smartsim
+  claws-mail
+)
+read -rp "Remove unneeded pre-installed apps (Raspberry Pi Connect, LibreOffice, Wolfram, Scratch, Minecraft, Sonic Pi, Thonny, Node-RED, Claws Mail — whichever are actually present) to save space/resources on this dedicated kiosk? [Y/n]: " DO_CLEANUP
+if [[ "${DO_CLEANUP,,}" != "n" ]]; then
+  TO_REMOVE=()
+  for pkg in "${BLOAT_PACKAGES[@]}"; do
+    dpkg -s "$pkg" &>/dev/null && TO_REMOVE+=("$pkg")
+  done
+  dpkg -l 'libreoffice*' 2>/dev/null | grep -q '^ii' && TO_REMOVE+=("libreoffice*")
+  if [[ "${#TO_REMOVE[@]}" -gt 0 ]]; then
+    log "Removing: ${TO_REMOVE[*]}"
+    sudo apt purge -y "${TO_REMOVE[@]}"
+    sudo apt autoremove -y
+  else
+    log "None of the known bloat packages are installed — nothing to remove."
+  fi
+else
+  log "Skipping cleanup."
+fi
+
+log "4/13 Updating system packages (this can take a while on first boot)"
 sudo apt update
 sudo apt full-upgrade -y
 sudo apt autoremove -y
 
-log "4/12 Installing security tooling"
+log "5/13 Installing security tooling"
 sudo apt install -y ufw fail2ban unattended-upgrades curl git
 
 # ---------------------------------------------------------------------------
-log "5/12 Admin user"
-read -rp "New username to create (leave blank to just change the current user's password): " NEW_USER
-if [[ -n "$NEW_USER" ]]; then
-  if id "$NEW_USER" &>/dev/null; then
+log "6/13 Admin user (optional)"
+read -rp "Create a new sudo user? [y/N]: " DO_NEW_USER
+if [[ "${DO_NEW_USER,,}" == "y" ]]; then
+  read -rp "New username: " NEW_USER
+  if [[ -z "$NEW_USER" ]]; then
+    warn "No username entered — skipping user creation."
+  elif id "$NEW_USER" &>/dev/null; then
     warn "User '$NEW_USER' already exists — skipping creation."
   else
     sudo adduser --gecos "" "$NEW_USER"
@@ -185,7 +223,7 @@ if [[ -n "$NEW_USER" ]]; then
     sudo usermod -aG sudo "$NEW_USER"
   fi
   CURRENT_USER="$(whoami)"
-  if [[ "$CURRENT_USER" != "$NEW_USER" ]]; then
+  if [[ -n "$NEW_USER" && "$CURRENT_USER" != "$NEW_USER" ]]; then
     read -rp "Lock login for current user '$CURRENT_USER'? Only do this once you've confirmed '$NEW_USER' can log in and sudo. [y/N]: " LOCK_OLD
     if [[ "${LOCK_OLD,,}" == "y" ]]; then
       sudo passwd -l "$CURRENT_USER"
@@ -193,12 +231,16 @@ if [[ -n "$NEW_USER" ]]; then
     fi
   fi
 else
-  log "Changing password for current user ($(whoami))"
-  passwd
+  read -rp "Change the password for the current user ($(whoami))? [y/N]: " DO_PASSWD
+  if [[ "${DO_PASSWD,,}" == "y" ]]; then
+    passwd
+  else
+    log "Skipping user/password changes."
+  fi
 fi
 
 # ---------------------------------------------------------------------------
-log "6/12 Hostname"
+log "7/13 Hostname"
 read -rp "New hostname (leave blank to keep '$(hostname)'): " NEW_HOSTNAME
 if [[ -n "$NEW_HOSTNAME" ]]; then
   if command -v raspi-config >/dev/null 2>&1; then
@@ -211,7 +253,7 @@ fi
 FINAL_HOSTNAME="${NEW_HOSTNAME:-$(hostname)}"
 
 # ---------------------------------------------------------------------------
-log "7/12 Firewall (ufw)"
+log "8/13 Firewall (ufw)"
 read -rp "Dashboard port to allow through the firewall [${APP_PORT}]: " APP_PORT_INPUT
 APP_PORT="${APP_PORT_INPUT:-$APP_PORT}"
 read -rp "Restrict dashboard/SSH access to a LAN subnet (e.g. 192.168.1.0/24)? Leave blank to allow from anywhere: " LAN_SUBNET
@@ -229,7 +271,7 @@ fi
 sudo ufw --force enable
 
 # ---------------------------------------------------------------------------
-log "8/12 Hardening SSH (root login disabled; password auth kept ON as requested)"
+log "9/13 Hardening SSH (root login disabled; password auth kept ON as requested)"
 SSHD_CONFIG=/etc/ssh/sshd_config
 sudo cp "$SSHD_CONFIG" "${SSHD_CONFIG}.bak.$(date +%s)"
 sudo sed -i \
@@ -241,7 +283,7 @@ sudo sed -i \
 sudo systemctl restart ssh 2>/dev/null || sudo systemctl restart sshd
 
 # ---------------------------------------------------------------------------
-log "9/12 fail2ban for SSH"
+log "10/13 fail2ban for SSH"
 sudo tee /etc/fail2ban/jail.local > /dev/null <<'EOF'
 [DEFAULT]
 bantime  = 1h
@@ -258,7 +300,7 @@ sudo systemctl enable --now fail2ban
 sudo systemctl restart fail2ban
 
 # ---------------------------------------------------------------------------
-log "10/12 Automatic security updates"
+log "11/13 Automatic security updates"
 echo 'Unattended-Upgrade::Origins-Pattern {
         "origin=Debian,codename=${distro_codename},label=Debian-Security";
         "origin=Raspbian,codename=${distro_codename},label=Raspbian";
@@ -269,7 +311,7 @@ APT::Periodic::Unattended-Upgrade "1";' | sudo tee /etc/apt/apt.conf.d/20auto-up
 sudo systemctl enable --now unattended-upgrades
 
 # ---------------------------------------------------------------------------
-log "11/12 Provisioning summary"
+log "12/13 Provisioning summary"
 sudo ufw status verbose
 echo
 sudo fail2ban-client status sshd || true
@@ -279,7 +321,7 @@ if [[ -n "$WIFI_IP" ]]; then
 fi
 
 # ---------------------------------------------------------------------------
-log "12/12 Installing the dashboard (git clone + deploy-dashboard.sh)"
+log "13/13 Installing the dashboard (git clone + deploy-dashboard.sh)"
 if [[ "$RUNNING_FROM_CLONE" == true ]]; then
   log "Already running from a clone at $REPO_ROOT — using it directly"
   git -C "$REPO_ROOT" pull || warn "git pull failed — continuing with the code already on disk"

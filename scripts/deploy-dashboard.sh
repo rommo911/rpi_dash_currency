@@ -92,7 +92,43 @@ if [[ ! -f "$INSTALL_DIR/scripts/auto-update.conf" ]]; then
   cp "$INSTALL_DIR/scripts/auto-update.conf.example" "$INSTALL_DIR/scripts/auto-update.conf"
 fi
 if [[ "$NEW_CONFIG" == true ]]; then
-  warn "config.py created with the placeholder password — change ADMIN_PASSWORD in $INSTALL_DIR/config.py before relying on it."
+  # -t 0 guards against a non-interactive run (automation, `ssh host cmd`
+  # with no pty, piped input): deploy-dashboard.sh is documented as safe
+  # to run unattended, and a bare `read` on closed/non-tty stdin returns
+  # non-zero, which set -e would treat as this whole script failing.
+  SET_ADMIN_PW="n"
+  if [[ -t 0 ]]; then
+    read -rp "Set a custom admin panel password now instead of the placeholder? [y/N]: " SET_ADMIN_PW || true
+  fi
+  if [[ "${SET_ADMIN_PW,,}" == "y" ]]; then
+    while true; do
+      read -rsp "New admin panel password: " ADMIN_PW1; echo
+      read -rsp "Confirm: " ADMIN_PW2; echo
+      if [[ -z "$ADMIN_PW1" ]]; then
+        warn "Password can't be empty."
+      elif [[ "$ADMIN_PW1" != "$ADMIN_PW2" ]]; then
+        warn "Passwords didn't match — try again."
+      else
+        break
+      fi
+    done
+    # Written via python's repr() so any character in the password (quotes,
+    # backslashes, unicode) ends up correctly escaped in the .py file —
+    # safer than trying to do this with sed.
+    python3 - "$ADMIN_PW1" "$INSTALL_DIR/config.py" <<'PYEOF'
+import pathlib
+import sys
+
+pw, cfg_path = sys.argv[1], pathlib.Path(sys.argv[2])
+lines = cfg_path.read_text(encoding="utf-8").splitlines(keepends=True)
+out = [f"ADMIN_PASSWORD = {pw!r}\n" if line.strip().startswith("ADMIN_PASSWORD") else line for line in lines]
+cfg_path.write_text("".join(out), encoding="utf-8")
+PYEOF
+    unset ADMIN_PW1 ADMIN_PW2
+    log "Admin panel password set."
+  else
+    warn "config.py created with the placeholder password — change ADMIN_PASSWORD in $INSTALL_DIR/config.py before relying on it."
+  fi
 fi
 
 log "4/11 Creating virtualenv and installing Python deps"
