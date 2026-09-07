@@ -275,6 +275,49 @@ configure_hdmi_always_on() {
   fi
 }
 
+configure_silent_boot() {
+  # Hide the kernel log spam, systemd "[ OK ] Started ..." lines, boot
+  # logo, and boot-delay countdown — a kiosk display has no reason to
+  # show any of that. Doesn't touch SSH's serial/tty1 console attachment,
+  # just how chatty the boot is on it.
+  local boot_dir=/boot/firmware
+  [[ -d "$boot_dir" ]] || boot_dir=/boot
+  local config="$boot_dir/config.txt"
+  local cmdline="$boot_dir/cmdline.txt"
+
+  if [[ -f "$cmdline" ]]; then
+    local line
+    line="$(cat "$cmdline")"
+    local original="$line"
+    local tok
+    for tok in quiet loglevel=0 systemd.show_status=0 vt.global_cursor_default=0 logo.nologo; do
+      if ! grep -qw "$tok" <<<"$line"; then
+        line="$line $tok"
+      fi
+    done
+    if [[ "$line" != "$original" ]]; then
+      sudo cp "$cmdline" "${cmdline}.bak.$(date +%s)"
+      echo "$line" | sudo tee "$cmdline" >/dev/null
+      log "Silenced kernel/systemd boot messages in $cmdline"
+    fi
+  fi
+
+  if [[ -f "$config" ]]; then
+    local changed=0
+    local line2
+    for line2 in "disable_splash=1" "boot_delay=0"; do
+      if ! grep -qxF "$line2" "$config"; then
+        [[ "$changed" -eq 0 ]] && sudo cp "$config" "${config}.bak.$(date +%s)"
+        echo "$line2" | sudo tee -a "$config" >/dev/null
+        changed=1
+      fi
+    done
+    if [[ "$changed" -eq 1 ]]; then
+      log "Disabled boot splash/delay in $config"
+    fi
+  fi
+}
+
 if is_headless; then
   log "10/11 Skipping kiosk setup (headless)"
   echo "This board has no display configured — access the dashboard from"
@@ -283,6 +326,7 @@ else
 
 log "10/11 Configuring kiosk autostart"
 configure_hdmi_always_on
+configure_silent_boot
 KIOSK_CMD="$CHROMIUM_BIN --kiosk --incognito --noerrant --disable-infobars --disable-session-crashed-bubble --check-for-update-interval=31536000 http://localhost:${APP_PORT}"
 
 setup_labwc() {
@@ -326,10 +370,23 @@ setup_console_x() {
   # seconds later ("Server terminated successfully (0)" in Xorg.0.log)
   # every single time — this was a real bug, caught live on a deployed
   # Pi where the console dropped straight back to a login shell.
+  #
+  # matchbox-window-manager is required here, not optional: bare xinit
+  # starts NO window manager at all, and without one nobody honors
+  # Chromium's --kiosk fullscreen request — it just gets whatever default
+  # size its toolkit picks (observed live: ~945x1060 at +10+10 on a
+  # 1920x1080 screen, i.e. the dashboard filling only the left half).
+  # matchbox is the standard minimal WM for exactly this Pi-OS-Lite-kiosk
+  # case; it auto-maximizes any window it manages. Give it a moment to
+  # start before Chromium maps its window, or the race can lose the same
+  # way.
+  sudo apt install -y xserver-xorg xinit matchbox-window-manager
   cat > "$HOME/.xinitrc" <<EOF
 xset -dpms
 xset s off
 xset s noblank
+matchbox-window-manager -use_cursor no -use_titlebar no &
+sleep 1
 until curl -s http://localhost:${APP_PORT} >/dev/null; do sleep 1; done
 exec $KIOSK_CMD
 EOF
@@ -341,7 +398,6 @@ if [ -z "$DISPLAY" ] && [ "$(tty)" = "/dev/tty1" ]; then
 fi
 PROFILE
   fi
-  sudo apt install -y xserver-xorg xinit
   command -v raspi-config >/dev/null 2>&1 && sudo raspi-config nonint do_boot_behaviour B2 || true
   log "Configured console autologin + startx kiosk (Raspberry Pi OS Lite)"
 }

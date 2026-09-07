@@ -202,11 +202,18 @@ It:
 10. Sets up kiosk autostart **if the board has a display** — detects
     labwc/wayfire (Raspberry Pi OS Bookworm), LXDE (older Pi OS Desktop), or
     console+X (Pi OS Lite) and configures Chromium accordingly, plus
-    autologin via `raspi-config`. Also forces HDMI output on
+    autologin via `raspi-config`. On the console+X path it also installs
+    **`matchbox-window-manager`**, needed for Chromium's kiosk mode to
+    actually fill the screen (with no window manager at all, nothing
+    honors the fullscreen request — the browser window sits at some
+    arbitrary default size instead). Also forces HDMI output on
     (`hdmi_force_hotplug` in `config.txt`) and disables console screen
     blanking (`consoleblank=0`), so the Pi keeps driving the HDMI signal even
     if no monitor is plugged in at boot — connect one later and it lights up
-    immediately, no reboot needed.
+    immediately, no reboot needed. And silences the boot itself (`quiet`,
+    `loglevel=0`, `systemd.show_status=0`, boot splash/delay disabled) so
+    it goes straight from power-on to the dashboard with no kernel/systemd
+    log spam on screen.
 
 ### HTTPS for the admin panel
 

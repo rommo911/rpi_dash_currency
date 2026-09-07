@@ -95,10 +95,18 @@ scripts/deploy-dashboard.sh   Clones the repo, creates data.json/config.py/
                                ALWAYS on by default — headless mode (skip
                                Chromium) is opt-in only via HEADLESS=true,
                                never guessed. Also forces HDMI output on
-                               (hdmi_force_hotplug in config.txt) and
-                               disables console blanking (consoleblank=0)
-                               so the screen stays driven even with no
-                               monitor attached at boot. Called
+                               (hdmi_force_hotplug in config.txt), disables
+                               console blanking (consoleblank=0) so the
+                               screen stays driven even with no monitor
+                               attached at boot, and silences kernel/
+                               systemd boot messages (quiet, loglevel=0,
+                               systemd.show_status=0, disable_splash=1,
+                               etc. — configure_silent_boot()). On the
+                               console+X path (no labwc/wayfire/LXDE) it
+                               also installs matchbox-window-manager,
+                               required for Chromium's --kiosk fullscreen
+                               request to actually be honored — see
+                               "Things to watch for" below. Called
                                automatically by provision-pi.sh, but also
                                safe to run standalone to update an existing
                                install — this ONE script already does
@@ -320,3 +328,31 @@ folder (`static/`) is used only for flag images.
   compositor/session-manager's own autostart mechanism, which keeps the
   session alive independently of whether the launched command backgrounds
   itself; only the raw `xinit`-read `.xinitrc` has this failure mode.
+- **`setup_console_x()` must install and launch `matchbox-window-manager`
+  — without a window manager, Chromium's `--kiosk` fullscreen request has
+  nobody to honor it.** Also caught live, right after the bug above:
+  Chromium started fine but its window sat at some toolkit-default size
+  (`945x1060` at `+10+10` on a 1920x1080 screen, confirmed via `xwininfo`
+  over SSH with `DISPLAY=:0 XAUTHORITY=/tmp/serverauth.*`) instead of
+  filling the screen — visually, the dashboard occupied roughly the left
+  half with the rest black. `xrandr` confirmed this was NOT a dual-output/
+  virtual-desktop-spanning issue (only one output, HDMI-2, genuinely
+  connected) — it was purely "nothing is managing/maximizing the window."
+  matchbox is the standard minimal WM for exactly this bare-X kiosk case:
+  launched backgrounded (`&`) with a `sleep 1` before Chromium so it's
+  ready before Chromium maps its window, `-use_cursor no -use_titlebar no`
+  to keep it invisible. After the fix, `xwininfo` showed Chromium at
+  exactly `1920x1080+0+0`. This does not apply to
+  `setup_labwc()`/`setup_wayfire()`/`setup_lxde()` — labwc/wayfire/LXDE
+  are themselves compositors/session managers that already maximize
+  single kiosk windows.
+- **Silent boot (`configure_silent_boot()`)** adds `quiet loglevel=0
+  systemd.show_status=0 vt.global_cursor_default=0 logo.nologo` to
+  `cmdline.txt` and `disable_splash=1 boot_delay=0` to `config.txt`, with
+  the same idempotent check-before-append pattern as
+  `configure_hdmi_always_on()`. Doesn't touch which `console=` entries
+  exist (serial debug console stays available) — just how chatty tty1 is
+  during boot. Autologin (`agetty --autologin`) already skips the login
+  prompt entirely; the only remaining visible artifact is a brief shell-
+  prompt flash before `.bash_profile` calls `startx` — not eliminated,
+  "as much as possible" per the ask, not "100%."
