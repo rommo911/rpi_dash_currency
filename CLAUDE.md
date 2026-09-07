@@ -302,3 +302,21 @@ folder (`static/`) is used only for flag images.
   first, so re-running the script (or `provision-pi.sh`) doesn't pile up
   duplicate `hdmi_force_hotplug`/`consoleblank` entries or backups. Keep
   that idempotency if you touch it.
+- **`setup_console_x()`'s `.xinitrc` must end with `exec $KIOSK_CMD` in the
+  foreground, never `$KIOSK_CMD &` backgrounded — this was a real,
+  deployed bug, not a hypothetical.** A backgrounded last command makes
+  `xinit`/`startx` tear the whole X session down the instant the script
+  reaches EOF with nothing left to wait on: on the console+X path (Pi OS
+  Lite, no labwc/wayfire/LXDE), X would start, launch Chromium, and exit
+  again within ~3 seconds every time — `Xorg.0.log` showed a clean
+  `Server terminated successfully (0)`, no crash, because the shutdown was
+  intentional as far as xinit was concerned. Confirmed live via SSH on a
+  deployed Pi: `ps aux` showed no Xorg/chromium process and the console
+  had dropped back to a bare login shell on tty1. Fixed by switching the
+  last line to `exec` (no trailing `&`), then verified the fix by
+  restarting `getty@tty1.service` remotely and confirming Xorg + the full
+  Chromium process tree stayed up. This does **not** apply to
+  `setup_labwc()`/`setup_wayfire()`/`setup_lxde()` — those write into a
+  compositor/session-manager's own autostart mechanism, which keeps the
+  session alive independently of whether the launched command backgrounds
+  itself; only the raw `xinit`-read `.xinitrc` has this failure mode.

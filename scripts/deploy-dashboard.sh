@@ -319,12 +319,19 @@ EOF
 }
 
 setup_console_x() {
+  # $KIOSK_CMD must be the FOREGROUND last command here (via exec, no
+  # trailing &) — xinit/startx tears the X session down the instant
+  # .xinitrc reaches EOF with nothing left to wait on. Backgrounding it
+  # made X start, launch Chromium, and immediately exit again a few
+  # seconds later ("Server terminated successfully (0)" in Xorg.0.log)
+  # every single time — this was a real bug, caught live on a deployed
+  # Pi where the console dropped straight back to a login shell.
   cat > "$HOME/.xinitrc" <<EOF
 xset -dpms
 xset s off
 xset s noblank
 until curl -s http://localhost:${APP_PORT} >/dev/null; do sleep 1; done
-$KIOSK_CMD &
+exec $KIOSK_CMD
 EOF
   if ! grep -q "startx" "$HOME/.bash_profile" 2>/dev/null; then
     cat >> "$HOME/.bash_profile" <<'PROFILE'
