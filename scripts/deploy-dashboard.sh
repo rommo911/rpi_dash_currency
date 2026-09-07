@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # Clone + install the currency dashboard on a Raspberry Pi and boot straight
-# into it in kiosk mode.
+# into it in kiosk mode. This is the default and always what happens unless
+# you explicitly opt out — kiosk mode is not skipped based on guessing what
+# hardware this is.
 #
 # Run this as the normal user the Pi boots into (e.g. "pi"), AFTER
 # provision-pi.sh has already hardened the system (or on its own, if you
@@ -8,6 +10,11 @@
 #
 # Usage:
 #   REPO_URL=https://github.com/<you>/rpi_dash_currency.git ./deploy-dashboard.sh
+#
+#   # Only for a board with no display attached (e.g. a headless Pi Zero W
+#   # you're reaching over the network) — skips Chromium/kiosk entirely.
+#   # You must ask for this explicitly; it is never assumed.
+#   HEADLESS=true REPO_URL=... ./deploy-dashboard.sh
 #
 # Re-running this script is safe: it pulls the latest code, reinstalls deps,
 # and re-applies the service/kiosk config.
@@ -18,6 +25,7 @@ REPO_URL="${REPO_URL:-https://github.com/<your-username>/rpi_dash_currency.git}"
 INSTALL_DIR="${INSTALL_DIR:-$HOME/currency-dashboard}"
 SERVICE_NAME="currency-dashboard"
 APP_PORT="${APP_PORT:-5000}"
+HEADLESS="${HEADLESS:-false}"
 
 log()  { echo -e "\n\033[1;36m==> $*\033[0m"; }
 warn() { echo -e "\033[1;33m$*\033[0m"; }
@@ -28,15 +36,34 @@ if [[ "$REPO_URL" == *"<your-username>"* ]]; then
   exit 1
 fi
 
+is_headless() {
+  [[ "$HEADLESS" == "true" ]]
+}
+
+if ! is_headless; then
+  # Just a heads-up, never a decision — kiosk mode still proceeds regardless.
+  model=""
+  [[ -f /proc/device-tree/model ]] && model="$(tr -d '\0' < /proc/device-tree/model)"
+  if [[ "$model" == *"Zero"* && "$model" != *"Zero 2"* ]]; then
+    warn "This looks like a Pi Zero / Zero W — it's quite weak for a browser."
+    warn "If it has no display attached, re-run with HEADLESS=true instead. Continuing with kiosk setup as requested."
+  fi
+fi
+
 log "1/6 Installing system dependencies"
 sudo apt update
 sudo apt install -y git python3-venv python3-pip curl
 
-CHROMIUM_BIN="$(command -v chromium-browser || command -v chromium || true)"
-if [[ -z "$CHROMIUM_BIN" ]]; then
-  log "Installing Chromium"
-  sudo apt install -y chromium-browser 2>/dev/null || sudo apt install -y chromium
-  CHROMIUM_BIN="$(command -v chromium-browser || command -v chromium)"
+CHROMIUM_BIN=""
+if is_headless; then
+  log "HEADLESS=true — skipping Chromium/kiosk setup"
+else
+  CHROMIUM_BIN="$(command -v chromium-browser || command -v chromium || true)"
+  if [[ -z "$CHROMIUM_BIN" ]]; then
+    log "Installing Chromium"
+    sudo apt install -y chromium-browser 2>/dev/null || sudo apt install -y chromium
+    CHROMIUM_BIN="$(command -v chromium-browser || command -v chromium)"
+  fi
 fi
 
 log "2/6 Cloning/updating repository into $INSTALL_DIR"
@@ -78,6 +105,12 @@ for _ in $(seq 1 30); do
   fi
   sleep 1
 done
+
+if is_headless; then
+  log "5/6 Skipping kiosk setup (headless)"
+  echo "This board has no display configured — access the dashboard from"
+  echo "another device's browser instead: http://$(hostname -I 2>/dev/null | awk '{print $1}'):${APP_PORT}/"
+else
 
 log "5/6 Configuring kiosk autostart"
 KIOSK_CMD="$CHROMIUM_BIN --kiosk --incognito --noerrant --disable-infobars --disable-session-crashed-bubble --check-for-update-interval=31536000 http://localhost:${APP_PORT}"
@@ -143,8 +176,14 @@ else
   setup_console_x
 fi
 
+fi  # is_headless
+
 log "6/6 Done"
 echo "Dashboard service: sudo systemctl status ${SERVICE_NAME}"
 echo "Dashboard URL:      http://localhost:${APP_PORT}/"
 echo
-warn "Reboot to launch the dashboard in kiosk mode: sudo reboot"
+if is_headless; then
+  echo "Headless mode — the service is already running, nothing more to do."
+else
+  warn "Reboot to launch the dashboard in kiosk mode: sudo reboot"
+fi
