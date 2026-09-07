@@ -36,16 +36,21 @@ if errorlevel 1 (
     exit /b 1
 )
 
+if not exist "data.json" (
+    echo Creating data.json from data.default.json ...
+    copy /y "data.default.json" "data.json" >nul
+)
+
 if not exist "config.py" (
-    echo config.py not found next to app.py - create it with an ADMIN_PASSWORD before continuing.
-    pause
-    exit /b 1
+    echo Creating config.py from config.py.example ...
+    copy /y "config.py.example" "config.py" >nul
+    echo NOTE: config.py has the placeholder admin password - change ADMIN_PASSWORD in config.py before relying on it.
 )
 
 echo.
 echo Starting the dashboard ...
 echo   Dashboard: http://127.0.0.1:5000/
-echo   Admin:     http://127.0.0.1:5000/admin
+echo   Admin:     http://127.0.0.1:5000/admin  (HTTP only here - HTTPS is set up by scripts/deploy-dashboard.sh on the Pi)
 echo Press Ctrl+C to stop.
 echo.
 

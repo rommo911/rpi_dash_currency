@@ -1,2 +1,6 @@
 __pycache__
 .venv
+ssl/
+config.py
+data.json
+scripts/auto-update.conf

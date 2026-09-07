@@ -8,15 +8,23 @@ price by hand. Flag icons are stored locally under static/flags/ — either
 auto-fetched once from flagcdn.com by guessing the ISO country code from the
 currency code, or uploaded by the admin. Everything persists to data.json.
 """
+import hashlib
+import hmac
 import json
+import logging
 import math
 import os
 import re
+import secrets
+import socket
+import ssl
+import threading
 import time
 import unicodedata
 import urllib.request
 
 from flask import Flask, Response, jsonify, redirect, render_template_string, request, url_for
+from werkzeug.serving import make_server
 from werkzeug.utils import secure_filename
 
 import config
@@ -24,7 +32,37 @@ import config
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
 DATA_FILE = os.path.join(APP_DIR, "data.json")
 FLAGS_DIR = os.path.join(APP_DIR, "static", "flags")
+SSL_DIR = os.path.join(APP_DIR, "ssl")
+CERT_FILE = os.path.join(SSL_DIR, "cert.pem")
+KEY_FILE = os.path.join(SSL_DIR, "key.pem")
 ALLOWED_FLAG_EXTS = {"png", "jpg", "jpeg", "webp", "svg"}
+
+APP_PORT = int(os.environ.get("APP_PORT", "5000"))
+HTTPS_PORT = int(os.environ.get("HTTPS_PORT", "5443"))
+# Best-effort default based on file presence; refined in __main__ once we've
+# actually confirmed the HTTPS listener can bind and load the cert.
+HTTPS_ENABLED = os.path.isfile(CERT_FILE) and os.path.isfile(KEY_FILE)
+
+# In-memory admin login lockout: N failures from one IP within WINDOW seconds
+# blocks further attempts from that IP until the window rolls past them.
+# Resets on process restart — acceptable for a single-instance Pi app.
+# fail2ban (scripts/deploy-dashboard.sh installs a jail watching the log
+# line emitted below) provides the firewall-level backstop for this.
+ADMIN_MAX_FAILURES = 5
+ADMIN_LOCKOUT_WINDOW = 300  # seconds
+_admin_failures_lock = threading.Lock()
+_admin_failures = {}  # ip -> [failure timestamps]
+
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
+security_log = logging.getLogger("admin-auth")
+
+# Per-process secret for the CSRF synchronizer token. The admin panel has no
+# session/cookie (plain HTTP Basic Auth), so the token is a fixed HMAC over a
+# constant string rather than a per-session nonce — it stays valid for the
+# life of the process, which is fine since its only job is to be unguessable
+# to a cross-origin page (the Same-Origin Policy already stops such a page
+# from reading it out of a fetched admin page).
+CSRF_SECRET = secrets.token_bytes(32)
 
 # Length limits are in *characters* (Python strings are code points, so this
 # is fair to Arabic too — combining marks aside, a name like "الليرة
@@ -101,6 +139,7 @@ TRANSLATIONS = {
         "err_unsupported_image": "Unsupported image file — use png/jpg/webp/svg",
         "err_flag_fetch_failed": "Couldn't auto-suggest a flag for {code} (no internet, or no match) — add it again and upload an image instead",
         "err_not_found": "Currency {code} not found",
+        "err_csrf": "Session expired — please try again.",
     },
     "ar": {
         "panel_title": "لوحة التحكم",
@@ -141,11 +180,40 @@ TRANSLATIONS = {
         "err_unsupported_image": "صيغة صورة غير مدعومة — استخدم png/jpg/webp/svg",
         "err_flag_fetch_failed": "تعذّر اقتراح علم لـ {code} (لا يوجد اتصال بالإنترنت أو لا تطابق) — أضفه مرة أخرى وارفع صورة بدلاً من ذلك",
         "err_not_found": "العملة {code} غير موجودة",
+        "err_csrf": "انتهت الجلسة — يرجى المحاولة مرة أخرى.",
     },
 }
 
 app = Flask(__name__)
 os.makedirs(FLAGS_DIR, exist_ok=True)
+
+
+@app.before_request
+def redirect_admin_to_https():
+    # The public dashboard (/, /api/data, /static/*) stays on plain HTTP so
+    # the kiosk browser never has to deal with a self-signed cert — only
+    # /admin gets pushed onto HTTPS, and only once the HTTPS listener is
+    # actually confirmed up (HTTPS_ENABLED, set for real once __main__ has
+    # successfully bound it — see bottom of this file).
+    if HTTPS_ENABLED and request.path.startswith("/admin") and request.scheme != "https":
+        host = request.host.split(":")[0]
+        target = f"https://{host}:{HTTPS_PORT}{request.full_path}".rstrip("?")
+        # 307 preserves the HTTP method/body, so a POSTed form doesn't
+        # silently turn into a GET when it crosses from HTTP to HTTPS.
+        return redirect(target, code=307)
+
+
+@app.after_request
+def set_security_headers(resp):
+    resp.headers["X-Content-Type-Options"] = "nosniff"
+    resp.headers["X-Frame-Options"] = "DENY"
+    resp.headers["Referrer-Policy"] = "no-referrer"
+    resp.headers["Content-Security-Policy"] = (
+        "default-src 'self'; img-src 'self' data:; "
+        "style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; "
+        "frame-ancestors 'none'"
+    )
+    return resp
 
 
 # --------------------------------------------------------------------------
@@ -196,6 +264,24 @@ def save_data(data):
     data["updated_at"] = int(time.time())
     with open(DATA_FILE, "w") as f:
         json.dump(data, f, indent=2)
+
+
+def get_lan_ip():
+    """Best-effort LAN IP for the on-screen overlay: opens a UDP socket
+    "connected" to a public address (no packet actually sent for UDP
+    connect — it just picks the outbound route) and reads back the local
+    address that route would use."""
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        s.connect(("8.8.8.8", 80))
+        return s.getsockname()[0]
+    except OSError:
+        try:
+            return socket.gethostbyname(socket.gethostname())
+        except OSError:
+            return "127.0.0.1"
+    finally:
+        s.close()
 
 
 def find_currency(data, code):
@@ -308,15 +394,53 @@ def delete_flag_file(flag_path):
 # Auth
 # --------------------------------------------------------------------------
 
+def _is_locked_out(ip):
+    now = time.time()
+    with _admin_failures_lock:
+        attempts = [t for t in _admin_failures.get(ip, []) if now - t < ADMIN_LOCKOUT_WINDOW]
+        if attempts:
+            _admin_failures[ip] = attempts
+        else:
+            _admin_failures.pop(ip, None)
+        return len(attempts) >= ADMIN_MAX_FAILURES
+
+
+def _record_admin_failure(ip):
+    with _admin_failures_lock:
+        _admin_failures.setdefault(ip, []).append(time.time())
+
+
 def require_admin_auth():
+    ip = request.remote_addr or "unknown"
+    if _is_locked_out(ip):
+        security_log.warning("Admin login locked out for %s (too many failed attempts)", ip)
+        return Response(
+            "Too many failed login attempts. Try again in a few minutes.",
+            429,
+            {"Retry-After": str(ADMIN_LOCKOUT_WINDOW)},
+        )
     auth = request.authorization
-    if not auth or auth.password != config.ADMIN_PASSWORD:
+    # hmac.compare_digest for a constant-time comparison — auth.password is
+    # attacker-controlled input compared against a real secret.
+    if not auth or not hmac.compare_digest(auth.password or "", config.ADMIN_PASSWORD):
+        _record_admin_failure(ip)
+        # fail2ban (see scripts/deploy-dashboard.sh) tails the journal for
+        # this exact message to ban repeat offenders at the firewall level.
+        security_log.warning("Failed admin login from %s", ip)
         return Response(
             "Authentication required.",
             401,
             {"WWW-Authenticate": 'Basic realm="Admin Panel"'},
         )
     return None
+
+
+def csrf_token():
+    return hmac.new(CSRF_SECRET, b"admin-csrf", hashlib.sha256).hexdigest()
+
+
+def check_csrf():
+    return hmac.compare_digest(request.form.get("csrf_token", ""), csrf_token())
 
 
 # --------------------------------------------------------------------------
@@ -415,6 +539,20 @@ DASHBOARD_HTML = """
     color: var(--accent);
   }
   .footer { margin-top: 36px; text-align: center; color: var(--text-dim); font-size: 1rem; }
+  .hostinfo {
+    position: fixed;
+    left: 16px;
+    bottom: 14px;
+    font-size: 0.85rem;
+    color: var(--text-dim);
+    background: rgba(0, 0, 0, 0.35);
+    padding: 6px 12px;
+    border-radius: 8px;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.6s ease;
+  }
+  .hostinfo.show { opacity: 1; }
 </style>
 </head>
 <body>
@@ -428,9 +566,28 @@ DASHBOARD_HTML = """
 
   <div class="footer" id="footer" {% if not settings.show_updated_at %}hidden{% endif %}><div id="updated-at">Loading&hellip;</div></div>
 </div>
+<div class="hostinfo" id="hostinfo"></div>
 
 <script>
 let lastUpdatedAt = null;
+let lastHostInfo = { hostname: '', ip: '' };
+
+function showHostInfo() {
+  const el = document.getElementById('hostinfo');
+  if (!lastHostInfo.hostname && !lastHostInfo.ip) return;
+  // textContent, not innerHTML — no escaping needed, the browser can't
+  // interpret this as markup regardless of what the values contain.
+  el.textContent = [lastHostInfo.hostname, lastHostInfo.ip].filter(Boolean).join('   ');
+  el.classList.add('show');
+  setTimeout(() => el.classList.remove('show'), 5000);
+}
+
+// Show the hostname/IP for 5s every 2 minutes, so anyone standing in front
+// of the kiosk screen can read it off without touching anything.
+setTimeout(function cycle() {
+  showHostInfo();
+  setTimeout(cycle, 120000);
+}, 120000);
 
 function fmt(n) {
   if (n === null || n === undefined) return '—';
@@ -459,6 +616,8 @@ async function refresh() {
   try {
     const res = await fetch('/api/data');
     const d = await res.json();
+
+    lastHostInfo = { hostname: d.hostname || '', ip: d.ip || '' };
 
     if (d.updated_at === lastUpdatedAt) {
       return; // nothing changed since last poll — skip the re-render
@@ -654,6 +813,7 @@ ADMIN_HTML = """
       <p class="sub" style="margin-bottom:0;">{{ t.panel_sub }}</p>
     </div>
     <form class="lang-form" method="post" action="{{ url_for('admin_set_language') }}">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
       <select name="admin_language" onchange="this.form.submit()">
         <option value="en" {% if lang == 'en' %}selected{% endif %}>English</option>
         <option value="ar" {% if lang == 'ar' %}selected{% endif %}>العربية</option>
@@ -668,10 +828,11 @@ ADMIN_HTML = """
        but submits one of these standalone per-currency forms instead of the
        big save-all form, via the button's form="..." attribute (HTML5). -->
   {% for c in currencies %}
-  <form id="delete-{{ c.code }}" method="post" action="{{ url_for('admin_delete_currency', code=c.code) }}"></form>
+  <form id="delete-{{ c.code }}" method="post" action="{{ url_for('admin_delete_currency', code=c.code) }}"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"></form>
   {% endfor %}
 
   <form method="post" action="{{ url_for('admin_save_all') }}">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
     <div class="settings-card">
       <h2>{{ t.settings_heading }}</h2>
       <div class="fields">
@@ -707,6 +868,7 @@ ADMIN_HTML = """
   <div class="add-card">
     <h2>{{ t.add_heading }}</h2>
     <form method="post" action="{{ url_for('admin_add_currency') }}" enctype="multipart/form-data">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
       <div class="fields">
         <input type="text" name="code" placeholder="{{ t.code_ph }}" maxlength="{{ max_code_len }}" required>
         <input type="text" name="name" placeholder="{{ t.name_req_ph }}" maxlength="{{ max_name_len }}" required>
@@ -749,6 +911,8 @@ def api_data():
         "title": data["settings"]["title"],
         "subtitle": data["settings"]["subtitle"],
         "show_updated_at": data["settings"]["show_updated_at"],
+        "hostname": socket.gethostname(),
+        "ip": get_lan_ip(),
     })
 
 
@@ -773,6 +937,7 @@ def admin_page():
         max_symbol_len=MAX_SYMBOL_LEN,
         max_code_len=MAX_CODE_LEN,
         max_price_value=MAX_PRICE_VALUE,
+        csrf_token=csrf_token(),
     )
 
 
@@ -782,6 +947,9 @@ def admin_set_language():
     if unauthorized:
         return unauthorized
     data = load_data()
+    _, t = get_translations(data)
+    if not check_csrf():
+        return redirect(url_for("admin_page", error=t["err_csrf"]))
     lang = request.form.get("admin_language", "en")
     if lang not in TRANSLATIONS:
         lang = "en"
@@ -797,6 +965,8 @@ def admin_save_all():
         return unauthorized
     data = load_data()
     _, t = get_translations(data)
+    if not check_csrf():
+        return redirect(url_for("admin_page", error=t["err_csrf"]))
 
     title = clean_text(request.form.get("title"), MAX_TITLE_LEN)
     if title is None:
@@ -853,6 +1023,8 @@ def admin_delete_currency(code):
         return unauthorized
     data = load_data()
     _, t = get_translations(data)
+    if not check_csrf():
+        return redirect(url_for("admin_page", error=t["err_csrf"]))
     c = find_currency(data, code)
     if not c:
         return redirect(url_for("admin_page", error=t["err_not_found"].format(code=code)))
@@ -870,6 +1042,8 @@ def admin_add_currency():
 
     data = load_data()
     _, t = get_translations(data)
+    if not check_csrf():
+        return redirect(url_for("admin_page", error=t["err_csrf"]))
 
     code = re.sub(r"[^A-Za-z0-9]", "", request.form.get("code", "")).upper()[:MAX_CODE_LEN]
     name = clean_text(request.form.get("name"), MAX_NAME_LEN)
@@ -916,4 +1090,32 @@ def admin_add_currency():
 
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5000, debug=False)
+    # The dashboard (/) always serves over plain HTTP on APP_PORT — the
+    # kiosk browser points here and must never hit a self-signed-cert
+    # warning. /admin is redirected to HTTPS by the before_request hook
+    # above, but only once the HTTPS listener below is actually confirmed
+    # working — until a cert exists (see scripts/generate-cert.sh), admin
+    # stays reachable over HTTP as a fallback rather than being locked out.
+    https_server = None
+    if os.path.isfile(CERT_FILE) and os.path.isfile(KEY_FILE):
+        try:
+            ssl_ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+            ssl_ctx.load_cert_chain(CERT_FILE, KEY_FILE)
+            https_server = make_server("0.0.0.0", HTTPS_PORT, app, ssl_context=ssl_ctx, threaded=True)
+        except OSError as e:
+            print(f"Could not start HTTPS listener on port {HTTPS_PORT}: {e}")
+
+    HTTPS_ENABLED = https_server is not None
+    if HTTPS_ENABLED:
+        print(f"Admin panel (HTTPS): https://{socket.gethostname()}:{HTTPS_PORT}/admin")
+    else:
+        print(f"No usable SSL cert at {CERT_FILE} — admin panel served over HTTP only. Run scripts/generate-cert.sh to enable HTTPS.")
+
+    http_server = make_server("0.0.0.0", APP_PORT, app, threaded=True)
+    threads = [threading.Thread(target=http_server.serve_forever, daemon=True)]
+    if https_server:
+        threads.append(threading.Thread(target=https_server.serve_forever, daemon=True))
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()

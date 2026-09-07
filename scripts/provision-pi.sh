@@ -299,5 +299,5 @@ if [[ ! -f "$INSTALL_DIR/scripts/deploy-dashboard.sh" ]]; then
 fi
 
 echo "Handing off to deploy-dashboard.sh ..."
-exec env REPO_URL="$REPO_URL" INSTALL_DIR="$INSTALL_DIR" APP_PORT="$APP_PORT" HEADLESS="$HEADLESS" \
+exec env REPO_URL="$REPO_URL" INSTALL_DIR="$INSTALL_DIR" APP_PORT="$APP_PORT" HEADLESS="$HEADLESS" LAN_SUBNET="${LAN_SUBNET:-}" \
   bash "$INSTALL_DIR/scripts/deploy-dashboard.sh"
