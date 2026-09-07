@@ -32,11 +32,18 @@ Ships with 4 default currencies: **SYP** (new Syrian pound flag),
 - `requirements.txt` — just Flask
 - `static/flags/` — local flag icons; the 4 defaults ship in the repo, more
   are added here automatically (or by upload) as you add currencies
-- `scripts/provision-pi.sh` — one-time hardening for a **fresh SD card**
-  (updates, new user, Wi-Fi, firewall, SSH hardening, fail2ban)
+- `scripts/provision-pi.sh` — **the one script to run on a fresh SD card**:
+  gets online (Wi-Fi/Ethernet) first, enables SSH, sets up a new user and
+  hostname, hardens the system (firewall, SSH, fail2ban), then
+  automatically clones this repo and hands off to `deploy-dashboard.sh` —
+  see below
 - `scripts/deploy-dashboard.sh` — clones this repo, sets up the venv,
   installs the systemd service, and configures kiosk boot (or skips kiosk
-  entirely on a headless board — see below)
+  entirely on a headless board — see below). Called automatically by
+  `provision-pi.sh`, but also safe to run on its own to update an existing
+  install
+- `scripts/run-local-windows.bat` — test the dashboard on a Windows PC via
+  a local Python venv (see below)
 
 ## 1. Test now on your homelab machine
 
@@ -56,6 +63,18 @@ Then from any browser on your LAN:
 Find `<homelab-ip>` with `hostname -I` on the homelab box. Stop the app with
 Ctrl+C when done testing.
 
+### Testing on Windows
+
+Double-click `scripts\run-local-windows.bat`, or run it from a terminal:
+
+```bat
+scripts\run-local-windows.bat
+```
+
+It creates a `.venv` (first run only), installs `requirements.txt`, and
+starts the app at `http://127.0.0.1:5000/` (admin at `/admin`). Ctrl+C to
+stop; re-run any time, it reuses the existing venv.
+
 ### Optional: run it persistently on the homelab (systemd only, no kiosk)
 
 ```bash
@@ -70,12 +89,9 @@ service. It's meant for the Pi, but works on any Debian-based box.
 
 ## 2. Deploying to a Raspberry Pi (fresh SD card → running)
 
-Two scripts, run in order.
-
-### Step 1 — `scripts/provision-pi.sh` (once, right after first boot)
-
-Flash Raspberry Pi OS, boot it, SSH in as the default user, then either
-clone the repo or just copy this one script over and run it:
+One script: `scripts/provision-pi.sh`. Flash Raspberry Pi OS, boot it, SSH
+in as the default user, then either clone the whole repo or just copy this
+one file over and run it — both work, it detects which situation it's in:
 
 ```bash
 scp scripts/provision-pi.sh pi@<pi-ip>:~
@@ -84,51 +100,38 @@ chmod +x provision-pi.sh
 ./provision-pi.sh
 ```
 
-It interactively:
+It runs through everything below in order, and **network comes first,
+before anything else** — apt and git both need internet access, and a
+fresh Pi typically has neither Ethernet nor Wi-Fi configured yet, so
+nothing that fetches packages runs until a connection is confirmed:
 
-1. Updates and upgrades all system packages
-2. Optionally creates a new sudo user and locks the old one's password
+1. **Network**: checks for an existing internet connection (e.g. Ethernet
+   already plugged in); if none, scans for nearby Wi-Fi networks (via
+   `nmcli`) and connects to one you pick, with a choice of DHCP or a static
+   IP (address, gateway, DNS) — retries if it fails, and refuses to
+   continue until a connection is confirmed working
+2. Enables **SSH**
+3. Updates and upgrades all system packages
+4. Installs security tooling (`ufw`, `fail2ban`, `unattended-upgrades`,
+   `git`, `curl`)
+5. Optionally creates a new sudo user and locks the old one's password
    (prompts before locking anything)
-3. Optionally sets a new hostname
-4. Optionally scans for nearby Wi-Fi networks (via `nmcli`) and connects to
-   one you pick, with a choice of DHCP or a static IP (address, gateway,
-   DNS) — then verifies the link came up and that it can reach the
-   internet
-5. Installs and enables **ufw**, default-deny incoming, opens SSH (22) and
+6. Optionally sets a new hostname
+7. Installs and enables **ufw**, default-deny incoming, opens SSH (22) and
    the dashboard port (5000) — optionally restricted to a LAN subnet you
    specify
-6. Hardens `sshd`: disables root login, keeps **password auth on** (as
+8. Hardens `sshd`: disables root login, keeps **password auth on** (as
    requested — fail2ban covers brute-force risk), tightens `MaxAuthTries`
    and `LoginGraceTime`
-7. Installs and enables **fail2ban** with an `sshd` jail (5 tries / 10 min →
+9. Installs and enables **fail2ban** with an `sshd` jail (5 tries / 10 min →
    1 hour ban)
-8. Enables **unattended-upgrades** for automatic security patches
-
-At the end it prints the dashboard URL (`http://<hostname>.local:<port>/`,
-plus the Wi-Fi IP if configured). Reboot when it finishes, then log back in
-as whichever user you kept.
-
-### Step 2 — `scripts/deploy-dashboard.sh` (installs the app)
-
-```bash
-REPO_URL=https://github.com/<you>/rpi_dash_currency.git \
-  bash scripts/deploy-dashboard.sh
-```
-
-(Or clone the repo first and run it from inside — either works; it's
-idempotent, safe to re-run any time to pull updates.)
-
-It:
-
-1. Installs `git`, `python3-venv`, `curl` (and Chromium, unless headless —
-   see below)
-2. Clones (or pulls) this repo into `~/currency-dashboard`
-3. Creates a venv and installs `requirements.txt`
-4. Installs and enables the `currency-dashboard` systemd service
-5. Sets up kiosk autostart **if the board has a display** — detects
-   labwc/wayfire (Raspberry Pi OS Bookworm), LXDE (older Pi OS Desktop), or
-   console+X (Pi OS Lite) and configures Chromium accordingly, plus
-   autologin via `raspi-config`
+10. Enables **unattended-upgrades** for automatic security patches
+11. Prints a summary (firewall status, fail2ban status, Wi-Fi IP if
+    configured)
+12. **Installs the dashboard**: if it's not already running from inside a
+    clone of this repo, clones one; either way it then hands off to
+    `scripts/deploy-dashboard.sh` automatically — see below for what that
+    does. No second script to run by hand.
 
 ```bash
 sudo reboot
@@ -140,6 +143,35 @@ dashboard. Check the service any time with:
 ```bash
 sudo systemctl status currency-dashboard
 ```
+
+### `scripts/deploy-dashboard.sh` (what step 12 hands off to)
+
+Also safe to run **on its own** any time afterward, to pull an update and
+re-apply the service/kiosk config, without redoing the network/hardening
+steps:
+
+```bash
+REPO_URL=https://github.com/<you>/rpi_dash_currency.git \
+  bash scripts/deploy-dashboard.sh
+```
+
+(Or run it from inside an existing clone — either works; it's idempotent.)
+
+It:
+
+1. Installs `git`, `python3-venv`, `curl` (and Chromium, unless headless —
+   see below)
+2. Clones (or pulls) this repo into `~/currency-dashboard`
+3. Creates a venv and installs `requirements.txt`
+4. Installs and enables the `currency-dashboard` systemd service
+5. Sets up kiosk autostart **if the board has a display** — detects
+   labwc/wayfire (Raspberry Pi OS Bookworm), LXDE (older Pi OS Desktop), or
+   console+X (Pi OS Lite) and configures Chromium accordingly, plus
+   autologin via `raspi-config`. Also forces HDMI output on
+   (`hdmi_force_hotplug` in `config.txt`) and disables console screen
+   blanking (`consoleblank=0`), so the Pi keeps driving the HDMI signal even
+   if no monitor is plugged in at boot — connect one later and it lights up
+   immediately, no reboot needed.
 
 ### Headless boards (e.g. Raspberry Pi Zero W)
 

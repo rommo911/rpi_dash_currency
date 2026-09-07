@@ -28,15 +28,37 @@ static/flags/                 Flag icon PNGs. 4 ship with the repo
                                (sy/us/eu/tr.png). More get added here
                                automatically (fetched from flagcdn.com) or
                                via admin upload when a currency is added.
-scripts/provision-pi.sh       One-time fresh-SD-card hardening: apt
-                               update/upgrade, new sudo user, Wi-Fi (nmcli),
+scripts/provision-pi.sh       The one script for a fresh SD card. Network
+                               FIRST (checks for existing internet, else
+                               loops on Wi-Fi via nmcli until connected —
+                               apt/git both need it and nothing installs
+                               before it's confirmed), then: enable sshd,
+                               apt update/upgrade, new sudo user, hostname,
                                ufw firewall, sshd hardening, fail2ban,
                                unattended-upgrades (security-only origins).
+                               Finally installs the dashboard: if not
+                               already run from inside a clone of this repo
+                               (detected via a sibling deploy-dashboard.sh),
+                               clones one, then execs into
+                               deploy-dashboard.sh. Works both copied alone
+                               onto a fresh card and run from inside an
+                               already-cloned checkout.
 scripts/deploy-dashboard.sh   Clones the repo, builds the venv, installs
                                the systemd service, sets up kiosk-mode
                                Chromium autostart. Kiosk is ALWAYS on by
                                default — headless mode (skip Chromium) is
                                opt-in only via HEADLESS=true, never guessed.
+                               Also forces HDMI output on
+                               (hdmi_force_hotplug in config.txt) and
+                               disables console blanking (consoleblank=0)
+                               so the screen stays driven even with no
+                               monitor attached at boot. Called
+                               automatically by provision-pi.sh, but also
+                               safe to run standalone to update an existing
+                               install.
+scripts/run-local-windows.bat Windows batch script: creates/reuses a .venv,
+                               installs requirements.txt, runs app.py for
+                               local testing at http://127.0.0.1:5000/.
 README.md                     Full user-facing setup/deploy instructions.
 ```
 
@@ -128,3 +150,16 @@ folder (`static/`) is used only for flag images.
   with embedded templates by design (Pi Zero W target, fastest-path
   philosophy from the original ask). Resist the urge to split into
   templates/blueprints/etc. unless the user asks.
+- **`provision-pi.sh` must keep network setup as its first step.** apt and
+  git both require internet, and a fresh Pi normally has neither Ethernet
+  nor Wi-Fi configured — the script checks connectivity via `check_internet()`
+  and loops on `connect_wifi()` until it succeeds (or the user explicitly
+  gives up) before running anything that fetches packages. Don't reorder a
+  step ahead of this that touches apt/git/curl.
+- **`deploy-dashboard.sh`'s `configure_hdmi_always_on()` edits
+  `/boot/firmware/config.txt` (or `/boot/config.txt` on older OS) and
+  `cmdline.txt`** — it backs up each file (`.bak.<timestamp>`) only the
+  first time it actually changes something, and checks for the exact line
+  first, so re-running the script (or `provision-pi.sh`) doesn't pile up
+  duplicate `hdmi_force_hotplug`/`consoleblank` entries or backups. Keep
+  that idempotency if you touch it.

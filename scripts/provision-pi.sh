@@ -1,20 +1,45 @@
 #!/usr/bin/env bash
-# Harden a fresh Raspberry Pi OS install: update system, create a new admin
-# user (optionally locking the default one), set the hostname, optionally
-# scan for and connect to Wi-Fi (DHCP or static IP), configure a firewall,
-# harden SSH, and protect it with fail2ban.
+# One script for a fresh Raspberry Pi OS install, start to finish: get
+# online, enable SSH, create the admin user, set the hostname, harden the
+# system (firewall, SSH, fail2ban, unattended-upgrades) — then
+# automatically install git, get this repo, and hand off to
+# deploy-dashboard.sh (venv + systemd service + kiosk autostart). By the
+# time it exits, the dashboard is installed and running.
 #
-# Run this ONCE, right after first boot, logged in as the default user
-# (over SSH or on the console). SSH password auth is intentionally left
-# enabled (fail2ban covers brute-force protection) — switch to key-only
-# auth later once you've copied your key over, if you want to lock it down
-# further.
+# Network comes FIRST, before anything else, on purpose: apt and git both
+# need internet access, and a fresh Pi typically has neither Ethernet nor
+# Wi-Fi configured yet. Nothing that fetches packages runs until a working
+# connection is confirmed.
 #
-# Usage:
+# Works both ways:
+#   - Copied alone onto a fresh SD card (no repo present yet) — it clones
+#     this repo itself before handing off to deploy-dashboard.sh.
+#   - Run from inside an already-cloned copy of this repo (e.g. you cloned
+#     it on your PC and copied the whole thing over, or git-cloned it
+#     directly on the Pi) — it detects deploy-dashboard.sh sitting next to
+#     it and uses that checkout directly instead of cloning a second copy.
+#
+# Usage (right after first boot, logged in as the default user):
+#   scp scripts/provision-pi.sh pi@<pi-ip>:~
+#   ssh pi@<pi-ip>
 #   chmod +x provision-pi.sh
 #   ./provision-pi.sh
+#
+# Optional env vars (all have sane defaults):
+#   REPO_URL     Git URL to clone (default: this project's GitHub repo) —
+#                only used when not already running from inside a clone
+#   INSTALL_DIR  Where to clone/install (default: ~/currency-dashboard) —
+#                only used when not already running from inside a clone
+#   APP_PORT     Dashboard port (default: 5000)
+#   HEADLESS     Set to "true" to skip Chromium/kiosk setup entirely
+#                (default: "false" — kiosk is always on unless you opt out)
 
 set -euo pipefail
+
+REPO_URL="${REPO_URL:-https://github.com/rommo911/rpi_dash_currency.git}"
+INSTALL_DIR="${INSTALL_DIR:-$HOME/currency-dashboard}"
+APP_PORT="${APP_PORT:-5000}"
+HEADLESS="${HEADLESS:-false}"
 
 log()  { echo -e "\n\033[1;36m==> $*\033[0m"; }
 warn() { echo -e "\033[1;33m$*\033[0m"; }
@@ -24,16 +49,132 @@ if [[ $EUID -eq 0 ]]; then
   exit 1
 fi
 
-log "1/9 Updating system packages (this can take a while on first boot)"
+# Detect whether we're already sitting inside a clone of this repo (has a
+# sibling deploy-dashboard.sh) so step 12 can skip re-cloning.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+RUNNING_FROM_CLONE=false
+if [[ -f "$SCRIPT_DIR/deploy-dashboard.sh" ]]; then
+  RUNNING_FROM_CLONE=true
+  REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+fi
+
+# ---------------------------------------------------------------------------
+check_internet() {
+  ping -c 1 -W 3 8.8.8.8 &>/dev/null && return 0
+  curl -fsS --max-time 5 https://deb.debian.org >/dev/null 2>&1 && return 0
+  return 1
+}
+
+connect_wifi() {
+  if ! command -v nmcli >/dev/null 2>&1; then
+    warn "nmcli (NetworkManager) not found on this system — can't configure Wi-Fi from here."
+    warn "Connect Ethernet instead, or configure Wi-Fi with 'sudo raspi-config'."
+    return 1
+  fi
+  WIFI_DEV="$(nmcli -t -f DEVICE,TYPE device status | awk -F: '$2=="wifi"{print $1; exit}')" || true
+  if [[ -z "$WIFI_DEV" ]]; then
+    warn "No Wi-Fi device detected."
+    return 1
+  fi
+
+  log "Scanning for networks on $WIFI_DEV..."
+  sudo nmcli device wifi rescan ifname "$WIFI_DEV" >/dev/null 2>&1 || true
+  sleep 2
+  nmcli --fields SSID,SIGNAL,SECURITY device wifi list ifname "$WIFI_DEV" 2>/dev/null | awk '!seen[$0]++' || true
+
+  read -rp "SSID to connect to (leave blank to skip): " WIFI_SSID
+  [[ -z "$WIFI_SSID" ]] && return 1
+
+  read -rsp "Password for '$WIFI_SSID' (leave blank for an open network): " WIFI_PASS
+  echo
+  read -rp "IP configuration — dhcp or static? [dhcp]: " IP_MODE
+  IP_MODE="${IP_MODE:-dhcp}"
+
+  # Drop any stale profile with the same name so we start clean.
+  sudo nmcli connection delete "$WIFI_SSID" >/dev/null 2>&1 || true
+
+  CONNECTED=1
+  if [[ -n "$WIFI_PASS" ]]; then
+    sudo nmcli device wifi connect "$WIFI_SSID" password "$WIFI_PASS" ifname "$WIFI_DEV" name "$WIFI_SSID" || CONNECTED=0
+  else
+    sudo nmcli device wifi connect "$WIFI_SSID" ifname "$WIFI_DEV" name "$WIFI_SSID" || CONNECTED=0
+  fi
+
+  if [[ "$CONNECTED" -eq 1 && "${IP_MODE,,}" == "static" ]]; then
+    read -rp "Static IP with CIDR prefix (e.g. 192.168.1.50/24): " STATIC_IP
+    read -rp "Gateway (e.g. 192.168.1.1): " STATIC_GW
+    read -rp "DNS server(s), space-separated (e.g. 192.168.1.1 1.1.1.1): " STATIC_DNS
+    if sudo nmcli connection modify "$WIFI_SSID" \
+        ipv4.method manual \
+        ipv4.addresses "$STATIC_IP" \
+        ipv4.gateway "$STATIC_GW" \
+        ipv4.dns "${STATIC_DNS// /,}" \
+      && sudo nmcli connection up "$WIFI_SSID"; then
+      :
+    else
+      warn "Failed to apply static IP settings — connection may still be using DHCP."
+    fi
+  fi
+
+  if [[ "$CONNECTED" -eq 1 ]]; then
+    sleep 3
+    STATE="$(nmcli -t -f GENERAL.STATE device show "$WIFI_DEV" 2>/dev/null | cut -d: -f2)" || true
+    if [[ "$STATE" == 100* ]]; then
+      WIFI_IP="$(nmcli -g IP4.ADDRESS device show "$WIFI_DEV" 2>/dev/null | head -n1 | cut -d/ -f1)" || true
+      echo "Connected — IP address: ${WIFI_IP:-unknown}"
+    else
+      warn "Device state is '${STATE:-unknown}' — Wi-Fi may not be connected. Check later with: nmcli device status"
+    fi
+  else
+    warn "Could not connect to '$WIFI_SSID' — check the SSID/password."
+  fi
+}
+
+log "1/12 Network connectivity — apt and git both need this before anything else can run"
+WIFI_IP=""
+if check_internet; then
+  log "Internet already reachable (Ethernet, or Wi-Fi already configured)."
+  read -rp "Reconfigure Wi-Fi anyway? [y/N]: " RECONFIGURE_WIFI
+else
+  warn "No internet connection detected yet — nothing can be installed until one is available."
+  RECONFIGURE_WIFI="y"
+fi
+
+if [[ "${RECONFIGURE_WIFI,,}" == "y" ]]; then
+  while true; do
+    connect_wifi || true
+    if check_internet; then
+      echo "Internet connectivity verified."
+      break
+    fi
+    warn "Still no internet connection."
+    read -rp "Try Wi-Fi setup again? [Y/n]: " RETRY
+    [[ "${RETRY,,}" == "n" ]] && break
+  done
+fi
+
+if ! check_internet; then
+  echo
+  echo "No internet connection available — apt and git both need one to continue."
+  echo "Connect Ethernet, or re-run this script to try Wi-Fi again (or configure it with 'sudo raspi-config'), then try again."
+  exit 1
+fi
+
+# ---------------------------------------------------------------------------
+log "2/12 Enabling SSH"
+sudo systemctl enable --now ssh 2>/dev/null || sudo systemctl enable --now sshd 2>/dev/null || \
+  warn "Could not find an ssh/sshd service to enable — SSH may already be active, or install openssh-server."
+
+log "3/12 Updating system packages (this can take a while on first boot)"
 sudo apt update
 sudo apt full-upgrade -y
 sudo apt autoremove -y
 
-log "2/9 Installing security tooling"
-sudo apt install -y ufw fail2ban unattended-upgrades curl
+log "4/12 Installing security tooling"
+sudo apt install -y ufw fail2ban unattended-upgrades curl git
 
 # ---------------------------------------------------------------------------
-log "3/9 Admin user"
+log "5/12 Admin user"
 read -rp "New username to create (leave blank to just change the current user's password): " NEW_USER
 if [[ -n "$NEW_USER" ]]; then
   if id "$NEW_USER" &>/dev/null; then
@@ -57,7 +198,7 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-log "4/9 Hostname"
+log "6/12 Hostname"
 read -rp "New hostname (leave blank to keep '$(hostname)'): " NEW_HOSTNAME
 if [[ -n "$NEW_HOSTNAME" ]]; then
   if command -v raspi-config >/dev/null 2>&1; then
@@ -70,84 +211,9 @@ fi
 FINAL_HOSTNAME="${NEW_HOSTNAME:-$(hostname)}"
 
 # ---------------------------------------------------------------------------
-log "5/9 Wi-Fi"
-WIFI_IP=""
-read -rp "Scan for and (re)configure Wi-Fi now? [y/N]: " SETUP_WIFI
-if [[ "${SETUP_WIFI,,}" == "y" ]]; then
-  if ! command -v nmcli >/dev/null 2>&1; then
-    warn "nmcli (NetworkManager) not found on this system — skipping. Configure Wi-Fi manually with 'sudo raspi-config' instead."
-  else
-    WIFI_DEV="$(nmcli -t -f DEVICE,TYPE device status | awk -F: '$2=="wifi"{print $1; exit}')" || true
-    if [[ -z "$WIFI_DEV" ]]; then
-      warn "No Wi-Fi device detected — skipping."
-    else
-      log "Scanning for networks on $WIFI_DEV..."
-      sudo nmcli device wifi rescan ifname "$WIFI_DEV" >/dev/null 2>&1 || true
-      sleep 2
-      nmcli --fields SSID,SIGNAL,SECURITY device wifi list ifname "$WIFI_DEV" 2>/dev/null | awk '!seen[$0]++' || true
-
-      read -rp "SSID to connect to (leave blank to skip Wi-Fi setup): " WIFI_SSID
-      if [[ -n "$WIFI_SSID" ]]; then
-        read -rsp "Password for '$WIFI_SSID' (leave blank for an open network): " WIFI_PASS
-        echo
-        read -rp "IP configuration — dhcp or static? [dhcp]: " IP_MODE
-        IP_MODE="${IP_MODE:-dhcp}"
-
-        # Drop any stale profile with the same name so we start clean.
-        sudo nmcli connection delete "$WIFI_SSID" >/dev/null 2>&1 || true
-
-        CONNECTED=1
-        if [[ -n "$WIFI_PASS" ]]; then
-          sudo nmcli device wifi connect "$WIFI_SSID" password "$WIFI_PASS" ifname "$WIFI_DEV" name "$WIFI_SSID" || CONNECTED=0
-        else
-          sudo nmcli device wifi connect "$WIFI_SSID" ifname "$WIFI_DEV" name "$WIFI_SSID" || CONNECTED=0
-        fi
-
-        if [[ "$CONNECTED" -eq 1 && "${IP_MODE,,}" == "static" ]]; then
-          read -rp "Static IP with CIDR prefix (e.g. 192.168.1.50/24): " STATIC_IP
-          read -rp "Gateway (e.g. 192.168.1.1): " STATIC_GW
-          read -rp "DNS server(s), space-separated (e.g. 192.168.1.1 1.1.1.1): " STATIC_DNS
-          if sudo nmcli connection modify "$WIFI_SSID" \
-              ipv4.method manual \
-              ipv4.addresses "$STATIC_IP" \
-              ipv4.gateway "$STATIC_GW" \
-              ipv4.dns "${STATIC_DNS// /,}" \
-            && sudo nmcli connection up "$WIFI_SSID"; then
-            :
-          else
-            warn "Failed to apply static IP settings — connection may still be using DHCP."
-          fi
-        fi
-
-        if [[ "$CONNECTED" -eq 1 ]]; then
-          log "Verifying connection..."
-          sleep 3
-          STATE="$(nmcli -t -f GENERAL.STATE device show "$WIFI_DEV" 2>/dev/null | cut -d: -f2)" || true
-          if [[ "$STATE" == 100* ]]; then
-            WIFI_IP="$(nmcli -g IP4.ADDRESS device show "$WIFI_DEV" 2>/dev/null | head -n1 | cut -d/ -f1)" || true
-            echo "Connected — IP address: ${WIFI_IP:-unknown}"
-          else
-            warn "Device state is '${STATE:-unknown}' — Wi-Fi may not be connected. Check later with: nmcli device status"
-          fi
-          if ping -c 2 -W 3 8.8.8.8 &>/dev/null; then
-            echo "Internet connectivity verified."
-          else
-            warn "Could not reach the internet over Wi-Fi — double-check credentials/static IP settings, or that the router is online."
-          fi
-        else
-          warn "Could not connect to '$WIFI_SSID' — check the SSID/password. Retry later with 'sudo raspi-config' or 'nmcli'."
-        fi
-      else
-        log "No SSID entered — skipping Wi-Fi setup."
-      fi
-    fi
-  fi
-fi
-
-# ---------------------------------------------------------------------------
-log "6/9 Firewall (ufw)"
-read -rp "Dashboard port to allow through the firewall [5000]: " APP_PORT
-APP_PORT="${APP_PORT:-5000}"
+log "7/12 Firewall (ufw)"
+read -rp "Dashboard port to allow through the firewall [${APP_PORT}]: " APP_PORT_INPUT
+APP_PORT="${APP_PORT_INPUT:-$APP_PORT}"
 read -rp "Restrict dashboard/SSH access to a LAN subnet (e.g. 192.168.1.0/24)? Leave blank to allow from anywhere: " LAN_SUBNET
 
 sudo ufw default deny incoming
@@ -163,7 +229,7 @@ fi
 sudo ufw --force enable
 
 # ---------------------------------------------------------------------------
-log "7/9 Hardening SSH (root login disabled; password auth kept ON as requested)"
+log "8/12 Hardening SSH (root login disabled; password auth kept ON as requested)"
 SSHD_CONFIG=/etc/ssh/sshd_config
 sudo cp "$SSHD_CONFIG" "${SSHD_CONFIG}.bak.$(date +%s)"
 sudo sed -i \
@@ -172,10 +238,10 @@ sudo sed -i \
   -e 's/^#\?MaxAuthTries.*/MaxAuthTries 4/' \
   -e 's/^#\?LoginGraceTime.*/LoginGraceTime 30/' \
   "$SSHD_CONFIG"
-sudo systemctl restart ssh
+sudo systemctl restart ssh 2>/dev/null || sudo systemctl restart sshd
 
 # ---------------------------------------------------------------------------
-log "8/9 fail2ban for SSH"
+log "9/12 fail2ban for SSH"
 sudo tee /etc/fail2ban/jail.local > /dev/null <<'EOF'
 [DEFAULT]
 bantime  = 1h
@@ -192,7 +258,7 @@ sudo systemctl enable --now fail2ban
 sudo systemctl restart fail2ban
 
 # ---------------------------------------------------------------------------
-log "9/9 Automatic security updates"
+log "10/12 Automatic security updates"
 echo 'Unattended-Upgrade::Origins-Pattern {
         "origin=Debian,codename=${distro_codename},label=Debian-Security";
         "origin=Raspbian,codename=${distro_codename},label=Raspbian";
@@ -203,7 +269,7 @@ APT::Periodic::Unattended-Upgrade "1";' | sudo tee /etc/apt/apt.conf.d/20auto-up
 sudo systemctl enable --now unattended-upgrades
 
 # ---------------------------------------------------------------------------
-log "Summary"
+log "11/12 Provisioning summary"
 sudo ufw status verbose
 echo
 sudo fail2ban-client status sshd || true
@@ -211,10 +277,27 @@ echo
 if [[ -n "$WIFI_IP" ]]; then
   echo "Wi-Fi IP address: $WIFI_IP"
 fi
-echo "Once the dashboard is deployed (scripts/deploy-dashboard.sh), reach it from any device on the LAN at:"
-echo "  http://${FINAL_HOSTNAME}.local:${APP_PORT}/"
-echo "(mDNS/.local resolution needs a reboot to pick up a new hostname, and needs Bonjour/mDNS support on the client — nearly"
-echo " always on by default on macOS/Linux/iOS/Android; Windows may need Bonjour or a recent build. The IP address above always works.)"
-echo
-warn "Reboot recommended before continuing: sudo reboot"
-warn "After reboot, log in as your (new) user and run scripts/deploy-dashboard.sh"
+
+# ---------------------------------------------------------------------------
+log "12/12 Installing the dashboard (git clone + deploy-dashboard.sh)"
+if [[ "$RUNNING_FROM_CLONE" == true ]]; then
+  log "Already running from a clone at $REPO_ROOT — using it directly"
+  git -C "$REPO_ROOT" pull || warn "git pull failed — continuing with the code already on disk"
+  INSTALL_DIR="$REPO_ROOT"
+elif [[ -d "$INSTALL_DIR/.git" ]]; then
+  log "Repo already present at $INSTALL_DIR — pulling latest"
+  git -C "$INSTALL_DIR" pull
+else
+  log "Cloning $REPO_URL into $INSTALL_DIR"
+  git clone "$REPO_URL" "$INSTALL_DIR"
+fi
+
+if [[ ! -f "$INSTALL_DIR/scripts/deploy-dashboard.sh" ]]; then
+  warn "scripts/deploy-dashboard.sh not found in $INSTALL_DIR — cannot continue automatically."
+  warn "Check REPO_URL ($REPO_URL) and run it manually once it's available."
+  exit 1
+fi
+
+echo "Handing off to deploy-dashboard.sh ..."
+exec env REPO_URL="$REPO_URL" INSTALL_DIR="$INSTALL_DIR" APP_PORT="$APP_PORT" HEADLESS="$HEADLESS" \
+  bash "$INSTALL_DIR/scripts/deploy-dashboard.sh"

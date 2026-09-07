@@ -106,6 +106,35 @@ for _ in $(seq 1 30); do
   sleep 1
 done
 
+configure_hdmi_always_on() {
+  local boot_dir=/boot/firmware
+  [[ -d "$boot_dir" ]] || boot_dir=/boot
+  local config="$boot_dir/config.txt"
+  local cmdline="$boot_dir/cmdline.txt"
+
+  if [[ -f "$config" ]]; then
+    local changed=0
+    for line in "hdmi_force_hotplug=1" "hdmi_force_hotplug:0=1" "hdmi_force_hotplug:1=1"; do
+      if ! grep -qxF "$line" "$config"; then
+        [[ "$changed" -eq 0 ]] && sudo cp "$config" "${config}.bak.$(date +%s)"
+        echo "$line" | sudo tee -a "$config" >/dev/null
+        changed=1
+      fi
+    done
+    if [[ "$changed" -eq 1 ]]; then
+      log "Forced HDMI output on in $config — the screen stays active even if no monitor is attached at boot (plugging one in later works without a reboot)"
+    fi
+  else
+    warn "Could not find $config — skipping HDMI force-hotplug"
+  fi
+
+  if [[ -f "$cmdline" ]] && ! grep -q 'consoleblank=0' "$cmdline"; then
+    sudo cp "$cmdline" "${cmdline}.bak.$(date +%s)"
+    sudo sed -i 's/$/ consoleblank=0/' "$cmdline"
+    log "Disabled console screen blanking in $cmdline"
+  fi
+}
+
 if is_headless; then
   log "5/6 Skipping kiosk setup (headless)"
   echo "This board has no display configured — access the dashboard from"
@@ -113,9 +142,13 @@ if is_headless; then
 else
 
 log "5/6 Configuring kiosk autostart"
+configure_hdmi_always_on
 KIOSK_CMD="$CHROMIUM_BIN --kiosk --incognito --noerrant --disable-infobars --disable-session-crashed-bubble --check-for-update-interval=31536000 http://localhost:${APP_PORT}"
 
 setup_labwc() {
+  # labwc doesn't blank/DPMS the screen by default on Pi OS Bookworm, so no
+  # xset-equivalent is needed here — configure_hdmi_always_on already
+  # covers the console/firmware-level blanking that would otherwise apply.
   mkdir -p "$HOME/.config/labwc"
   cat > "$HOME/.config/labwc/autostart" <<EOF
 $KIOSK_CMD &
