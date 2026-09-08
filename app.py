@@ -1131,7 +1131,30 @@ if __name__ == "__main__":
         try:
             ssl_ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
             ssl_ctx.load_cert_chain(CERT_FILE, KEY_FILE)
-            https_server = make_server("0.0.0.0", HTTPS_PORT, app, ssl_context=ssl_ctx, threaded=True)
+            # Built with NO ssl_context here, then the listening socket is
+            # wrapped manually below with do_handshake_on_connect=False —
+            # NOT the same as passing ssl_context= to make_server(), which
+            # wraps with the default do_handshake_on_connect=True. That
+            # default performs the TLS handshake SYNCHRONOUSLY inside the
+            # shared accept() call, before threaded=True ever hands the
+            # connection to a worker thread. One client whose handshake
+            # stalls (network blip, a browser retrying against a stale
+            # cert, anything) then wedges accept() forever — and with it,
+            # every other client, including localhost. This was a real,
+            # live bug (admin panel ERR_TIMED_OUT, reproduced with a
+            # standalone script: a single stuck connection blocked a
+            # second, completely unrelated client indefinitely) — a
+            # restart "fixes" it by throwing away the wedged process, but
+            # doesn't fix the underlying flaw. do_handshake_on_connect=False
+            # defers the handshake to the first read/write on each
+            # connection, which happens in that connection's own worker
+            # thread — confirmed with the same repro that a stuck client
+            # no longer affects anyone else.
+            https_server = make_server("0.0.0.0", HTTPS_PORT, app, threaded=True)
+            https_server.socket = ssl_ctx.wrap_socket(
+                https_server.socket, server_side=True, do_handshake_on_connect=False
+            )
+            https_server.ssl_context = ssl_ctx
         except OSError as e:
             print(f"Could not start HTTPS listener on port {HTTPS_PORT}: {e}")
 

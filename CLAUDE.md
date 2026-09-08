@@ -165,6 +165,34 @@ folder (`static/`) is used only for flag images.
   HTTP" instead of locking anyone out. `/`, `/api/data`, and `/static/*`
   are never redirected — the kiosk browser (`http://localhost:<APP_PORT>`)
   never touches HTTPS or the self-signed cert.
+- **The HTTPS listener is built WITHOUT `make_server`'s `ssl_context=`
+  argument, on purpose — this is load-bearing, not a style choice.**
+  Passing `ssl_context=` wraps the *listening* socket with the default
+  `do_handshake_on_connect=True`, which makes the TLS handshake run
+  *synchronously inside the shared `accept()` call*, before
+  `threaded=True` ever hands a connection to a worker thread. One client
+  whose handshake stalls — a browser retrying against a stale cert, a
+  network blip, anything that opens the TCP connection and doesn't
+  immediately complete the handshake — wedges `accept()` forever, and
+  with it every other client, including `curl` from `127.0.0.1` on the
+  same box. This was a real, live bug: the admin panel went
+  `ERR_TIMED_OUT` for everyone after a Wi-Fi network change, reproduced
+  with a standalone script (one stuck raw TCP connection made a second,
+  unrelated client hang indefinitely), and confirmed that `socket.accept()`
+  does *not* propagate a listening socket's `settimeout()` value to
+  accepted sockets (only forces blocking mode) — so "just set a timeout on
+  the listening socket" does not fix it. `sudo systemctl restart
+  currency-dashboard` "fixes" the symptom every time (a fresh process has
+  no wedged connection) without fixing the underlying flaw — don't take
+  that as evidence it isn't a real bug. The actual fix: build with no
+  `ssl_context`, then manually
+  `https_server.socket = ssl_ctx.wrap_socket(https_server.socket, server_side=True, do_handshake_on_connect=False)`
+  and set `https_server.ssl_context = ssl_ctx` — this defers the
+  handshake to the first read/write on each accepted connection, which
+  happens inside that connection's own worker thread, so a stuck client
+  only ever blocks itself. Verified with the same repro before/after.
+  Don't revert to the plain `ssl_context=` kwarg on `make_server` for the
+  HTTPS listener.
 - **HTTPS cert**: generated/renewed by `scripts/generate-cert.sh` (SAN =
   hostname, `hostname.local`, `localhost`, current LAN IP, 127.0.0.1),
   called once by `deploy-dashboard.sh` right after cloning and then every
