@@ -675,7 +675,7 @@ setTimeout(showHostInfo, 120000);
 
 function fmt(n) {
   if (n === null || n === undefined) return '—';
-  return Number(n).toLocaleString(undefined, {maximumFractionDigits: 2});
+  return Number(n).toLocaleString(undefined, {maximumFractionDigits: 3});
 }
 
 function esc(s) {
@@ -973,7 +973,7 @@ ADMIN_HTML = """
       <div class="inline">
         <input type="text" name="name_{{ c.code }}" value="{{ c.name }}" placeholder="{{ t.name_ph }}" maxlength="{{ max_name_len }}" required>
         <input type="text" name="symbol_{{ c.code }}" value="{{ c.symbol }}" placeholder="{{ t.symbol_ph }}" maxlength="{{ max_symbol_len }}">
-        <input type="number" name="price_{{ c.code }}" value="{{ c.price }}" step="any" min="0" max="{{ max_price_value }}" placeholder="{{ t.price_ph }}" required>
+        <input type="text" inputmode="decimal" name="price_{{ c.code }}" value="{{ c.price }}" oninput="filterDecimalInput(this)" placeholder="{{ t.price_ph }}" required>
         <label class="chk"><input type="checkbox" name="enabled_{{ c.code }}" {% if c.enabled %}checked{% endif %}> {{ t.enabled_label }}</label>
       </div>
       <button type="submit" form="delete-{{ c.code }}" class="delete" onclick="return confirm('{{ t.confirm_remove.format(code=c.code) }}');">{{ t.remove_btn }}</button>
@@ -991,7 +991,7 @@ ADMIN_HTML = """
         <input type="text" name="code" placeholder="{{ t.code_ph }}" maxlength="{{ max_code_len }}" required>
         <input type="text" name="name" placeholder="{{ t.name_req_ph }}" maxlength="{{ max_name_len }}" required>
         <input type="text" name="symbol" placeholder="{{ t.symbol_opt_ph }}" maxlength="{{ max_symbol_len }}">
-        <input type="number" name="price" placeholder="{{ t.price_req_ph }}" step="any" min="0" max="{{ max_price_value }}" required>
+        <input type="text" inputmode="decimal" name="price" placeholder="{{ t.price_req_ph }}" oninput="filterDecimalInput(this)" required>
       </div>
       <div class="flag-choice">
         <label><input type="radio" name="flag_source" value="auto" checked> {{ t.flag_auto }}</label>
@@ -1004,6 +1004,17 @@ ADMIN_HTML = """
 
   <a class="back" href="/">{{ t.back_link }}</a>
 </div>
+<script>
+// Price fields are type="text" (not type="number") specifically to kill
+// the browser's native spinner/scroll-to-change-value behavior on number
+// inputs — this restores "only digits and one dot" by hand instead.
+function filterDecimalInput(el) {
+  let v = el.value.replace(/[^0-9.]/g, '');
+  const i = v.indexOf('.');
+  if (i !== -1) v = v.slice(0, i + 1) + v.slice(i + 1).replace(/\\./g, '');
+  if (v !== el.value) el.value = v;
+}
+</script>
 </body>
 </html>
 """
