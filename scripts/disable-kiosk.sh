@@ -46,7 +46,16 @@ fi
 log "Disabling kiosk auto-boot"
 if [[ -f "$HOME/.bash_profile" ]] && grep -qE '^\s*startx\s*$' "$HOME/.bash_profile"; then
   cp "$HOME/.bash_profile" "$HOME/.bash_profile.bak.$(date +%s)"
-  sed -i -E 's/^(\s*)startx\s*$/\1# startx  # disabled by disable-kiosk.sh -- re-run deploy-dashboard.sh to restore/' "$HOME/.bash_profile"
+  # `:` (a real, valid no-op command), NOT a bare comment -- replacing the
+  # only statement inside an if/then/fi with just a comment leaves an
+  # EMPTY then-body, which is a bash syntax error ("unexpected token
+  # `fi'"). That error aborts sourcing the rest of .bash_profile entirely,
+  # silently skipping any later block too -- including a freshly
+  # redeployed, otherwise-correct startx block. Confirmed live: this
+  # exact bug caused a real Pi's kiosk to never come back after
+  # disable-kiosk.sh + a redeploy, verified with a standalone repro before
+  # this fix (see CLAUDE.md).
+  sed -i -E 's/^(\s*)startx\s*$/\1: # startx disabled by disable-kiosk.sh -- re-run deploy-dashboard.sh to restore/' "$HOME/.bash_profile"
   echo "Commented out the 'startx' line in ~/.bash_profile — kiosk will no longer auto-launch on boot."
 else
   echo "No active 'startx' line found in ~/.bash_profile — already disabled, or console+X kiosk was never configured on this board."
