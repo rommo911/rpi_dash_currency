@@ -70,7 +70,18 @@ fi
 
 log "2/11 Cloning/updating repository into $INSTALL_DIR"
 if [[ -d "$INSTALL_DIR/.git" ]]; then
-  git -C "$INSTALL_DIR" pull
+  # A checkout from before data.json/config.py were gitignored may still
+  # have them TRACKED with local (real, live) modifications — untrack
+  # them first (keeps the on-disk file untouched) so the update below can
+  # never delete them. fetch+reset instead of a plain `git pull`: pull
+  # refuses outright on local changes to a path the merge touches (a loud
+  # but safe failure), while fetch+reset here — now that the untrack
+  # guard makes it safe — always succeeds, matching what
+  # scripts/auto-update.sh already does for consistency.
+  git -C "$INSTALL_DIR" rm --cached -q data.json config.py 2>/dev/null || true
+  CURRENT_BRANCH="$(git -C "$INSTALL_DIR" rev-parse --abbrev-ref HEAD)"
+  git -C "$INSTALL_DIR" fetch origin "$CURRENT_BRANCH"
+  git -C "$INSTALL_DIR" reset --hard "origin/$CURRENT_BRANCH"
 else
   git clone "$REPO_URL" "$INSTALL_DIR"
 fi

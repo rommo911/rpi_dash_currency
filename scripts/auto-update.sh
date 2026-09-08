@@ -5,11 +5,14 @@
 # by the currency-dashboard-updater systemd timer (installed by
 # deploy-dashboard.sh) — also safe to run by hand any time.
 #
-# data.json and config.py are gitignored and were never committed as
-# themselves (data.default.json / config.py.example are the tracked
-# templates deploy-dashboard.sh copies from on first deploy) — so
-# `git reset --hard` here can never touch them, at all, under any
-# circumstance. Don't track either file directly again; see CLAUDE.md.
+# data.json and config.py are gitignored (data.default.json /
+# config.py.example are the tracked templates deploy-dashboard.sh copies
+# from on first deploy), and this script untracks them locally (git rm
+# --cached, keeps the on-disk file) before every reset --hard as a
+# guard for any checkout old enough to predate that change — a plain
+# reset --hard silently DELETES a file that's tracked+locally-modified in
+# HEAD but absent from the target commit, confirmed by testing. Don't
+# track either file directly again; see CLAUDE.md.
 #
 # Usage:
 #   INSTALL_DIR=/path/to/repo ./auto-update.sh
@@ -55,9 +58,13 @@ REMOTE="$(git rev-parse "origin/$BRANCH")"
 if [[ "$LOCAL" != "$REMOTE" ]]; then
   log "Update available on $BRANCH: ${LOCAL:0:9} -> ${REMOTE:0:9}"
   REQS_BEFORE="$(git show HEAD:requirements.txt 2>/dev/null || true)"
-  # --skip-worktree on data.json/config.py (set at deploy time) means this
-  # never touches either file's on-disk content, no matter what changed
-  # upstream.
+  # A checkout from before data.json/config.py were gitignored may still
+  # have them TRACKED with local (real, live) modifications — untrack
+  # them first (keeps the on-disk file untouched) so reset --hard can
+  # never delete them. Confirmed by testing: reset --hard on a file that's
+  # tracked+locally-modified in HEAD but absent from the target commit's
+  # tree silently DELETES it outright — this is not a hypothetical.
+  git rm --cached -q data.json config.py 2>/dev/null || true
   git reset --hard "origin/$BRANCH" --quiet
   REQS_AFTER="$(cat requirements.txt 2>/dev/null || true)"
   if [[ "$REQS_BEFORE" != "$REQS_AFTER" && -x "$INSTALL_DIR/.venv/bin/pip" ]]; then

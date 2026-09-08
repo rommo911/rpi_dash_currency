@@ -345,13 +345,20 @@ fi
 
 # ---------------------------------------------------------------------------
 log "14/14 Installing the dashboard (git clone + deploy-dashboard.sh)"
+# Untrack data.json/config.py first if this checkout predates them being
+# gitignored — a plain `git pull`/reset would otherwise refuse or (worse,
+# for reset --hard) silently delete a live-modified copy of either file.
+# See scripts/auto-update.sh for the full explanation; deploy-dashboard.sh
+# repeats this same update below anyway, so failures here are non-fatal.
 if [[ "$RUNNING_FROM_CLONE" == true ]]; then
   log "Already running from a clone at $REPO_ROOT — using it directly"
+  git -C "$REPO_ROOT" rm --cached -q data.json config.py 2>/dev/null || true
   git -C "$REPO_ROOT" pull || warn "git pull failed — continuing with the code already on disk"
   INSTALL_DIR="$REPO_ROOT"
 elif [[ -d "$INSTALL_DIR/.git" ]]; then
   log "Repo already present at $INSTALL_DIR — pulling latest"
-  git -C "$INSTALL_DIR" pull
+  git -C "$INSTALL_DIR" rm --cached -q data.json config.py 2>/dev/null || true
+  git -C "$INSTALL_DIR" pull || warn "git pull failed — continuing with the code already on disk"
 else
   log "Cloning $REPO_URL into $INSTALL_DIR"
   git clone "$REPO_URL" "$INSTALL_DIR"

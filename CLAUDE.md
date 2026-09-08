@@ -291,6 +291,32 @@ folder (`static/`) is used only for flag images.
   `config.py.example` still ships with the placeholder password
   (`changeme123`) — real deployments should change `ADMIN_PASSWORD` in the
   generated `config.py`, not the template.
+- **"Untracked files are immune to reset --hard" is only true for a
+  checkout that started that way.** A second real bug, caught live on an
+  already-deployed Pi whose checkout predated the commit above: its
+  `data.json` was still tracked with real local modifications (from
+  before the gitignore change existed), so `git pull` refused outright —
+  loud but safe. Then, testing what `scripts/auto-update.sh`'s actual
+  `git reset --hard` would have done in that same situation: it succeeds
+  with no error and **silently deletes** the file, because it's tracked
+  and locally-modified in the OLD HEAD but absent from the target
+  commit's tree — confirmed with a scripted before/after test, not
+  assumed. Every currently-deployed Pi predating the gitignore change was
+  one auto-update cycle away from losing its live `data.json` (and,
+  worse, `config.py` — which would then crash the app on next restart,
+  since there's no fallback for a missing `config.py` the way `load_data()`
+  has one for a missing `data.json`). Fixed by having `auto-update.sh`,
+  `deploy-dashboard.sh`, and `provision-pi.sh` all run
+  `git rm --cached -q data.json config.py 2>/dev/null || true`
+  immediately before their `pull`/`fetch+reset` — untracks them locally
+  first (never touches the on-disk file) so the update can't conflict
+  with or delete either one, regardless of how old the checkout is.
+  `deploy-dashboard.sh`'s clone/pull step was also switched from a plain
+  `git pull` to `fetch` + `reset --hard` (matching `auto-update.sh`) once
+  that guard made it safe to do so — `pull` still refuses outright in
+  edge cases even with the guard (tested), `fetch`+`reset --hard`
+  doesn't. If you add another local-state file (gitignored, templated),
+  give it the same `git rm --cached` guard in all three scripts.
 - **`HEADLESS` in `deploy-dashboard.sh` defaults to `false`.** Kiosk setup
   always runs unless the caller explicitly passes `HEADLESS=true`. Do not
   reintroduce hardware-guessing logic that skips kiosk mode by default —
