@@ -390,7 +390,13 @@ sleep 1
 until curl -s http://localhost:${APP_PORT} >/dev/null; do sleep 1; done
 exec $KIOSK_CMD
 EOF
-  if ! grep -q "startx" "$HOME/.bash_profile" 2>/dev/null; then
+  # Match only an ACTIVE (uncommented) startx line — scripts/disable-kiosk.sh
+  # neutralizes kiosk autostart by commenting this exact line out, and a
+  # plain `grep -q "startx"` would still match inside that comment, making
+  # deploy-dashboard.sh wrongly think kiosk autostart is already configured
+  # and silently skip re-adding it. This way a redeploy after disabling
+  # correctly restores it (the old commented block stays too, harmlessly).
+  if ! grep -qE '^\s*startx\s*$' "$HOME/.bash_profile" 2>/dev/null; then
     cat >> "$HOME/.bash_profile" <<'PROFILE'
 
 if [ -z "$DISPLAY" ] && [ "$(tty)" = "/dev/tty1" ]; then

@@ -130,7 +130,7 @@ connect_wifi() {
   fi
 }
 
-log "1/13 Network connectivity — apt and git both need this before anything else can run"
+log "1/14 Network connectivity — apt and git both need this before anything else can run"
 WIFI_IP=""
 if check_internet; then
   log "Internet already reachable (Ethernet, or Wi-Fi already configured)."
@@ -161,12 +161,12 @@ if ! check_internet; then
 fi
 
 # ---------------------------------------------------------------------------
-log "2/13 Enabling SSH"
+log "2/14 Enabling SSH"
 sudo systemctl enable --now ssh 2>/dev/null || sudo systemctl enable --now sshd 2>/dev/null || \
   warn "Could not find an ssh/sshd service to enable — SSH may already be active, or install openssh-server."
 
 # ---------------------------------------------------------------------------
-log "3/13 Removing unneeded pre-installed packages"
+log "3/14 Removing unneeded pre-installed packages"
 # Only relevant on Raspberry Pi OS "Desktop"/"Full" images, which bundle a
 # bunch of apps a dedicated kiosk display never uses. Each is checked with
 # dpkg -s first, so this is a no-op on Lite (none of these are installed
@@ -200,16 +200,16 @@ else
   log "Skipping cleanup."
 fi
 
-log "4/13 Updating system packages (this can take a while on first boot)"
+log "4/14 Updating system packages (this can take a while on first boot)"
 sudo apt update
 sudo apt full-upgrade -y
 sudo apt autoremove -y
 
-log "5/13 Installing security tooling"
+log "5/14 Installing security tooling"
 sudo apt install -y ufw fail2ban unattended-upgrades curl git
 
 # ---------------------------------------------------------------------------
-log "6/13 Admin user (optional)"
+log "6/14 Admin user (optional)"
 read -rp "Create a new sudo user? [y/N]: " DO_NEW_USER
 if [[ "${DO_NEW_USER,,}" == "y" ]]; then
   read -rp "New username: " NEW_USER
@@ -240,7 +240,7 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-log "7/13 Hostname"
+log "7/14 Hostname"
 read -rp "New hostname (leave blank to keep '$(hostname)'): " NEW_HOSTNAME
 if [[ -n "$NEW_HOSTNAME" ]]; then
   if command -v raspi-config >/dev/null 2>&1; then
@@ -253,7 +253,7 @@ fi
 FINAL_HOSTNAME="${NEW_HOSTNAME:-$(hostname)}"
 
 # ---------------------------------------------------------------------------
-log "8/13 Firewall (ufw)"
+log "8/14 Firewall (ufw)"
 read -rp "Dashboard port to allow through the firewall [${APP_PORT}]: " APP_PORT_INPUT
 APP_PORT="${APP_PORT_INPUT:-$APP_PORT}"
 read -rp "Restrict dashboard/SSH access to a LAN subnet (e.g. 192.168.1.0/24)? Leave blank to allow from anywhere: " LAN_SUBNET
@@ -271,7 +271,7 @@ fi
 sudo ufw --force enable
 
 # ---------------------------------------------------------------------------
-log "9/13 Hardening SSH (root login disabled; password auth kept ON as requested)"
+log "9/14 Hardening SSH (root login disabled; password auth kept ON as requested)"
 SSHD_CONFIG=/etc/ssh/sshd_config
 sudo cp "$SSHD_CONFIG" "${SSHD_CONFIG}.bak.$(date +%s)"
 sudo sed -i \
@@ -283,7 +283,7 @@ sudo sed -i \
 sudo systemctl restart ssh 2>/dev/null || sudo systemctl restart sshd
 
 # ---------------------------------------------------------------------------
-log "10/13 fail2ban for SSH"
+log "10/14 fail2ban for SSH"
 sudo tee /etc/fail2ban/jail.local > /dev/null <<'EOF'
 [DEFAULT]
 bantime  = 1h
@@ -300,7 +300,7 @@ sudo systemctl enable --now fail2ban
 sudo systemctl restart fail2ban
 
 # ---------------------------------------------------------------------------
-log "11/13 Automatic security updates"
+log "11/14 Automatic security updates"
 echo 'Unattended-Upgrade::Origins-Pattern {
         "origin=Debian,codename=${distro_codename},label=Debian-Security";
         "origin=Raspbian,codename=${distro_codename},label=Raspbian";
@@ -311,7 +311,30 @@ APT::Periodic::Unattended-Upgrade "1";' | sudo tee /etc/apt/apt.conf.d/20auto-up
 sudo systemctl enable --now unattended-upgrades
 
 # ---------------------------------------------------------------------------
-log "12/13 Provisioning summary"
+log "12/14 System-wide log limits (errors only, 1 week max)"
+# journald's own MaxLevelStore is what "errors only" actually means at the
+# system level: messages below the given level still reach live watchers
+# (journalctl -f, fail2ban's follow-mode) but are never written to disk —
+# so this cuts disk usage from routine info/debug noise without starving
+# anything that depends on real-time log-following. The dashboard's own
+# security-relevant log line is deliberately emitted at ERROR (see
+# app.py/CLAUDE.md) specifically so it still gets *stored* under this
+# policy and the admin-login fail2ban jail keeps working.
+# A drop-in under journald.conf.d/, not a raw edit of journald.conf, so
+# this stays isolated from distro defaults and is safe to re-run.
+sudo mkdir -p /etc/systemd/journald.conf.d
+sudo tee /etc/systemd/journald.conf.d/10-currency-dashboard-limits.conf > /dev/null <<'EOF'
+[Journal]
+Storage=persistent
+Compress=yes
+MaxLevelStore=err
+MaxRetentionSec=1week
+SystemMaxUse=200M
+EOF
+sudo systemctl restart systemd-journald
+
+# ---------------------------------------------------------------------------
+log "13/14 Provisioning summary"
 sudo ufw status verbose
 echo
 sudo fail2ban-client status sshd || true
@@ -321,7 +344,7 @@ if [[ -n "$WIFI_IP" ]]; then
 fi
 
 # ---------------------------------------------------------------------------
-log "13/13 Installing the dashboard (git clone + deploy-dashboard.sh)"
+log "14/14 Installing the dashboard (git clone + deploy-dashboard.sh)"
 if [[ "$RUNNING_FROM_CLONE" == true ]]; then
   log "Already running from a clone at $REPO_ROOT — using it directly"
   git -C "$REPO_ROOT" pull || warn "git pull failed — continuing with the code already on disk"

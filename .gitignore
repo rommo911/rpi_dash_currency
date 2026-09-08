@@ -4,3 +4,4 @@ ssl/
 config.py
 data.json
 scripts/auto-update.conf
+logs/

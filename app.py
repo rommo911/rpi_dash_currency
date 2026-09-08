@@ -12,6 +12,7 @@ import hashlib
 import hmac
 import json
 import logging
+from logging.handlers import TimedRotatingFileHandler
 import math
 import os
 import re
@@ -35,6 +36,8 @@ FLAGS_DIR = os.path.join(APP_DIR, "static", "flags")
 SSL_DIR = os.path.join(APP_DIR, "ssl")
 CERT_FILE = os.path.join(SSL_DIR, "cert.pem")
 KEY_FILE = os.path.join(SSL_DIR, "key.pem")
+LOG_DIR = os.path.join(APP_DIR, "logs")
+LOG_FILE = os.path.join(LOG_DIR, "app.log")
 ALLOWED_FLAG_EXTS = {"png", "jpg", "jpeg", "webp", "svg"}
 
 APP_PORT = int(os.environ.get("APP_PORT", "5000"))
@@ -53,8 +56,35 @@ ADMIN_LOCKOUT_WINDOW = 300  # seconds
 _admin_failures_lock = threading.Lock()
 _admin_failures = {}  # ip -> [failure timestamps]
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
+# Logging: errors only, everywhere, on purpose (matches the system-wide
+# journald policy provision-pi.sh sets up — see CLAUDE.md). Two pieces:
+#  - The root logger (and "werkzeug" specifically, which otherwise logs
+#    every single request at INFO — that's the noisy "GET /api/data ...
+#    200 -" line) is capped at ERROR, so routine traffic never gets logged
+#    at all, only real problems.
+#  - security_log ("admin-auth") logs failed-login/lockout events via
+#    .error() (not .warning()) — deliberately: journald's MaxLevelStore=err
+#    (see provision-pi.sh) drops anything below error from being *stored*
+#    at all, and the fail2ban jail depends on this exact message reaching
+#    the journal. A failed admin login is a legitimate error-level event
+#    anyway, not just informational, so this isn't a stretch — but don't
+#    downgrade it back to .warning() without also loosening MaxLevelStore,
+#    or fail2ban silently stops seeing anything.
+# A dedicated rotating file (logs/app.log, ERROR+, 7 daily backups = 1
+# week) captures the same errors independently of whatever the system
+# journal is doing, since journald's retention is a system-wide policy
+# and rotation here is this app's own, explicit guarantee.
+logging.basicConfig(level=logging.ERROR, format="%(asctime)s %(message)s")
+logging.getLogger("werkzeug").setLevel(logging.ERROR)
+
+os.makedirs(LOG_DIR, exist_ok=True)
+_file_handler = TimedRotatingFileHandler(LOG_FILE, when="midnight", backupCount=7, encoding="utf-8")
+_file_handler.setLevel(logging.ERROR)
+_file_handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s"))
+logging.getLogger().addHandler(_file_handler)
+
 security_log = logging.getLogger("admin-auth")
+security_log.setLevel(logging.ERROR)
 
 # Per-process secret for the CSRF synchronizer token. The admin panel has no
 # session/cookie (plain HTTP Basic Auth), so the token is a fixed HMAC over a
@@ -413,7 +443,7 @@ def _record_admin_failure(ip):
 def require_admin_auth():
     ip = request.remote_addr or "unknown"
     if _is_locked_out(ip):
-        security_log.warning("Admin login locked out for %s (too many failed attempts)", ip)
+        security_log.error("Admin login locked out for %s (too many failed attempts)", ip)
         return Response(
             "Too many failed login attempts. Try again in a few minutes.",
             429,
@@ -426,7 +456,7 @@ def require_admin_auth():
         _record_admin_failure(ip)
         # fail2ban (see scripts/deploy-dashboard.sh) tails the journal for
         # this exact message to ban repeat offenders at the firewall level.
-        security_log.warning("Failed admin login from %s", ip)
+        security_log.error("Failed admin login from %s", ip)
         return Response(
             "Authentication required.",
             401,

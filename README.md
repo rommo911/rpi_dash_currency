@@ -54,6 +54,9 @@ Ships with 4 default currencies: **SYP** (new Syrian pound flag),
   idempotent, safe to run any time (see "HTTPS for the admin panel" below)
 - `scripts/auto-update.sh` + `scripts/auto-update.conf(.example)` — the
   auto-updater and its branch config (see "Keeping it updated" below)
+- `scripts/disable-kiosk.sh` — maintenance mode: stops the app and the
+  auto-updater, stops kiosk mode from auto-launching, kills any running
+  kiosk session. Re-run `deploy-dashboard.sh` to undo
 - `scripts/run-local-windows.bat` — test the dashboard on a Windows PC via
   a local Python venv (see below)
 
@@ -147,9 +150,14 @@ nothing that fetches packages runs until a connection is confirmed:
 10. Installs and enables **fail2ban** with an `sshd` jail (5 tries / 10 min
     → 1 hour ban)
 11. Enables **unattended-upgrades** for automatic security patches
-12. Prints a summary (firewall status, fail2ban status, Wi-Fi IP if
+12. **Limits system logging to errors only, capped at 1 week** — a
+    journald drop-in (`MaxLevelStore=err`, `MaxRetentionSec=1week`,
+    `SystemMaxUse=200M`) so routine info/debug noise doesn't fill the SD
+    card over time. The dashboard app has its own matching policy — see
+    "Logging" below
+13. Prints a summary (firewall status, fail2ban status, Wi-Fi IP if
     configured)
-13. **Installs the dashboard**: if it's not already running from inside a
+14. **Installs the dashboard**: if it's not already running from inside a
     clone of this repo, clones one; either way it then hands off to
     `scripts/deploy-dashboard.sh` automatically — see below for what that
     does. No second script to run by hand.
@@ -255,6 +263,39 @@ its logs any time with `journalctl -u currency-dashboard-updater`.
 The dashboard shows the Pi's hostname and LAN IP in the bottom-left corner
 for 5 seconds every 2 minutes — handy for finding the admin URL from in
 front of the screen without needing another device.
+
+### Logging
+
+Both the system (`provision-pi.sh`) and the app (`app.py`) are set up to
+log **errors only, retained for 1 week max**:
+
+- System-wide: journald keeps only `err`-and-above severity on disk
+  (`MaxLevelStore=err`), auto-deletes anything older than a week, and caps
+  total usage at 200 MB.
+- The app: routine request logging is off entirely (no per-request access
+  log line), and its own errors go to a dedicated rotating file,
+  `logs/app.log`, capped at 7 daily backups. Failed admin logins are
+  logged at `ERROR` (not the more intuitive `WARNING`) specifically so
+  they still get stored under the `MaxLevelStore=err` policy above — the
+  `fail2ban` jail depends on being able to see them.
+
+Check either any time with `journalctl -u currency-dashboard --since "1 hour ago"`
+or `tail logs/app.log` in the install directory.
+
+### Maintenance mode
+
+`scripts/disable-kiosk.sh` stops the app, pauses the auto-updater timer,
+stops the kiosk browser from auto-launching on the next boot, and kills
+any kiosk session that's currently running — useful before SSHing in to
+do admin work (update code, debug, etc.) without the service or kiosk
+fighting you. Run it on the Pi:
+
+```bash
+bash scripts/disable-kiosk.sh
+```
+
+There's no separate "enable" script — running `scripts/deploy-dashboard.sh`
+again restores everything (service, updater timer, kiosk autostart).
 
 ### Headless boards (e.g. Raspberry Pi Zero W)
 

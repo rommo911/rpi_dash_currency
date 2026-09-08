@@ -128,6 +128,13 @@ scripts/auto-update.conf(.example)
                                BRANCH=main (or whatever branch to track).
                                auto-update.conf is gitignored — your choice
                                here is never touched by an update.
+scripts/disable-kiosk.sh      Maintenance-mode toggle: stops+disables the
+                               service and the updater timer, comments out
+                               the active `startx` line in .bash_profile
+                               (console+X path only), and kills any
+                               running Xorg/chromium/matchbox. No separate
+                               "enable" script — re-running
+                               deploy-dashboard.sh restores everything.
 scripts/run-local-windows.bat Windows batch script: creates/reuses a .venv,
                                installs requirements.txt, creates data.json/
                                config.py from their templates if missing,
@@ -193,6 +200,10 @@ folder (`static/`) is used only for flag images.
   inline `<style>`/`<script>` blocks and inline event handlers
   (`onclick`, `onchange`) — that's intentional, not an oversight; a nonce-
   based CSP would need a bigger template rework.
+- **Logging is errors-only, deliberately, at both the app and system
+  level** — see the "Things to watch for" entry below before changing any
+  log level in this app; the two layers (journald's `MaxLevelStore` and
+  `security_log`'s level) depend on each other in a non-obvious way.
 - **data.json shape**:
   ```json
   {
@@ -356,3 +367,37 @@ folder (`static/`) is used only for flag images.
   prompt entirely; the only remaining visible artifact is a brief shell-
   prompt flash before `.bash_profile` calls `startx` — not eliminated,
   "as much as possible" per the ask, not "100%."
+- **`security_log` logs at `.error()`, not `.warning()` — this is load-
+  bearing, not a style choice.** `provision-pi.sh` sets journald's
+  `MaxLevelStore=err` system-wide (see below), which means anything
+  logged below error severity is never written to the journal at all —
+  not just trimmed from long-term retention, genuinely never stored,
+  which also means fail2ban's journal-following jail would never see it.
+  Failed-login/lockout messages are logged at `.error()` specifically so
+  they keep reaching both the journal (and therefore fail2ban) and
+  `logs/app.log` under that policy. If you ever add more security-
+  relevant logging, use `.error()` for the same reason, or loosen
+  `MaxLevelStore` in lockstep — don't let the two drift apart.
+- **`provision-pi.sh`'s log-limits step** (`journald.conf.d/10-currency-
+  dashboard-limits.conf`: `MaxLevelStore=err`, `MaxRetentionSec=1week`,
+  `SystemMaxUse=200M`) and **`app.py`'s own `logs/app.log`** (`Timed
+  RotatingFileHandler`, `when="midnight"`, `backupCount=7` = 1 week,
+  level `ERROR`) are two independent, deliberately redundant layers —
+  journald's policy is system-wide and would apply even if the app
+  weren't Python/didn't have its own file handler; the app's own rotating
+  file is a guarantee that doesn't depend on journald's config being
+  correct on whatever box it's running on. Keep both in sync if the
+  retention window ever changes (currently 1 week in both places).
+  `werkzeug`'s logger is also pinned to `ERROR` in `app.py` — without
+  that it logs every single request at INFO (`"GET /api/data ... 200 -"`
+  on every 3s poll), which is what was flooding `systemctl status`
+  output before this.
+- **`setup_console_x()`'s `startx` detection must stay an exact-line
+  match (`grep -qE '^\s*startx\s*$'`), not a substring `grep -q
+  "startx"`.** `scripts/disable-kiosk.sh` neutralizes kiosk autostart by
+  commenting that exact line out (leaving the word "startx" present in
+  the comment) — a substring match would still find it and
+  `deploy-dashboard.sh` would wrongly conclude kiosk autostart was
+  already configured, silently skipping re-adding it, so a redeploy after
+  disabling would NOT actually restore kiosk mode. Verified both
+  directions with a scripted test before this shipped.
