@@ -142,23 +142,26 @@ nothing that fetches packages runs until a connection is confirmed:
    change the current user's password instead. Answer no to both to leave
    accounts untouched entirely.
 7. Optionally sets a new hostname
-8. Installs and enables **ufw**, default-deny incoming, opens SSH (22) and
+8. Sets the timezone to **Asia/Damascus** and enables NTP time sync
+   (`timedatectl set-ntp true`) — persists across reboots, not a one-time
+   sync
+9. Installs and enables **ufw**, default-deny incoming, opens SSH (22) and
    the dashboard port (5000) — optionally restricted to a LAN subnet you
    specify
-9. Hardens `sshd`: disables root login, keeps **password auth on** (as
-   requested — fail2ban covers brute-force risk), tightens `MaxAuthTries`
-   and `LoginGraceTime`
-10. Installs and enables **fail2ban** with an `sshd` jail (5 tries / 10 min
+10. Hardens `sshd`: disables root login, keeps **password auth on** (as
+    requested — fail2ban covers brute-force risk), tightens `MaxAuthTries`
+    and `LoginGraceTime`
+11. Installs and enables **fail2ban** with an `sshd` jail (5 tries / 10 min
     → 1 hour ban)
-11. Enables **unattended-upgrades** for automatic security patches
-12. **Limits system logging to errors only, capped at 1 week** — a
+12. Enables **unattended-upgrades** for automatic security patches
+13. **Limits system logging to errors only, capped at 1 week** — a
     journald drop-in (`MaxLevelStore=err`, `MaxRetentionSec=1week`,
     `SystemMaxUse=200M`) so routine info/debug noise doesn't fill the SD
     card over time. The dashboard app has its own matching policy — see
     "Logging" below
-13. Prints a summary (firewall status, fail2ban status, Wi-Fi IP if
+14. Prints a summary (firewall status, fail2ban status, Wi-Fi IP if
     configured)
-14. **Installs the dashboard**: if it's not already running from inside a
+15. **Installs the dashboard**: if it's not already running from inside a
     clone of this repo, clones one; either way it then hands off to
     `scripts/deploy-dashboard.sh` automatically — see below for what that
     does. No second script to run by hand.

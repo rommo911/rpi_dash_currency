@@ -50,7 +50,7 @@ if [[ $EUID -eq 0 ]]; then
 fi
 
 # Detect whether we're already sitting inside a clone of this repo (has a
-# sibling deploy-dashboard.sh) so step 12 can skip re-cloning.
+# sibling deploy-dashboard.sh) so the final step can skip re-cloning.
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 RUNNING_FROM_CLONE=false
 if [[ -f "$SCRIPT_DIR/deploy-dashboard.sh" ]]; then
@@ -178,7 +178,7 @@ connect_wifi() {
   fi
 }
 
-log "1/14 Network connectivity — apt and git both need this before anything else can run"
+log "1/15 Network connectivity — apt and git both need this before anything else can run"
 WIFI_IP=""
 if check_internet; then
   log "Internet already reachable (Ethernet, or Wi-Fi already configured)."
@@ -209,12 +209,12 @@ if ! check_internet; then
 fi
 
 # ---------------------------------------------------------------------------
-log "2/14 Enabling SSH"
+log "2/15 Enabling SSH"
 sudo systemctl enable --now ssh 2>/dev/null || sudo systemctl enable --now sshd 2>/dev/null || \
   warn "Could not find an ssh/sshd service to enable — SSH may already be active, or install openssh-server."
 
 # ---------------------------------------------------------------------------
-log "3/14 Removing unneeded pre-installed packages"
+log "3/15 Removing unneeded pre-installed packages"
 # Only relevant on Raspberry Pi OS "Desktop"/"Full" images, which bundle a
 # bunch of apps a dedicated kiosk display never uses. Each is checked with
 # dpkg -s first, so this is a no-op on Lite (none of these are installed
@@ -248,16 +248,16 @@ else
   log "Skipping cleanup."
 fi
 
-log "4/14 Updating system packages (this can take a while on first boot)"
+log "4/15 Updating system packages (this can take a while on first boot)"
 sudo apt update
 sudo apt full-upgrade -y
 sudo apt autoremove -y
 
-log "5/14 Installing security tooling"
+log "5/15 Installing security tooling"
 sudo apt install -y ufw fail2ban unattended-upgrades curl git
 
 # ---------------------------------------------------------------------------
-log "6/14 Admin user (optional)"
+log "6/15 Admin user (optional)"
 read -rp "Create a new sudo user? [y/N]: " DO_NEW_USER
 if [[ "${DO_NEW_USER,,}" == "y" ]]; then
   read -rp "New username: " NEW_USER
@@ -288,7 +288,7 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-log "7/14 Hostname"
+log "7/15 Hostname"
 read -rp "New hostname (leave blank to keep '$(hostname)'): " NEW_HOSTNAME
 if [[ -n "$NEW_HOSTNAME" ]]; then
   if command -v raspi-config >/dev/null 2>&1; then
@@ -301,7 +301,16 @@ fi
 FINAL_HOSTNAME="${NEW_HOSTNAME:-$(hostname)}"
 
 # ---------------------------------------------------------------------------
-log "8/14 Firewall (ufw)"
+log "8/15 Timezone and NTP"
+sudo timedatectl set-timezone Asia/Damascus
+# set-ntp true both syncs now (via systemd-timesyncd) and persists as an
+# enabled system setting — timesyncd starts automatically on every future
+# boot too, this isn't a one-shot sync.
+sudo timedatectl set-ntp true
+timedatectl status | grep -E 'Time zone|NTP service|System clock synchronized' || true
+
+# ---------------------------------------------------------------------------
+log "9/15 Firewall (ufw)"
 read -rp "Dashboard port to allow through the firewall [${APP_PORT}]: " APP_PORT_INPUT
 APP_PORT="${APP_PORT_INPUT:-$APP_PORT}"
 read -rp "Restrict dashboard/SSH access to a LAN subnet (e.g. 192.168.1.0/24)? Leave blank to allow from anywhere: " LAN_SUBNET
@@ -319,7 +328,7 @@ fi
 sudo ufw --force enable
 
 # ---------------------------------------------------------------------------
-log "9/14 Hardening SSH (root login disabled; password auth kept ON as requested)"
+log "10/15 Hardening SSH (root login disabled; password auth kept ON as requested)"
 SSHD_CONFIG=/etc/ssh/sshd_config
 sudo cp "$SSHD_CONFIG" "${SSHD_CONFIG}.bak.$(date +%s)"
 sudo sed -i \
@@ -331,7 +340,7 @@ sudo sed -i \
 sudo systemctl restart ssh 2>/dev/null || sudo systemctl restart sshd
 
 # ---------------------------------------------------------------------------
-log "10/14 fail2ban for SSH"
+log "11/15 fail2ban for SSH"
 sudo tee /etc/fail2ban/jail.local > /dev/null <<'EOF'
 [DEFAULT]
 bantime  = 1h
@@ -348,7 +357,7 @@ sudo systemctl enable --now fail2ban
 sudo systemctl restart fail2ban
 
 # ---------------------------------------------------------------------------
-log "11/14 Automatic security updates"
+log "12/15 Automatic security updates"
 echo 'Unattended-Upgrade::Origins-Pattern {
         "origin=Debian,codename=${distro_codename},label=Debian-Security";
         "origin=Raspbian,codename=${distro_codename},label=Raspbian";
@@ -359,7 +368,7 @@ APT::Periodic::Unattended-Upgrade "1";' | sudo tee /etc/apt/apt.conf.d/20auto-up
 sudo systemctl enable --now unattended-upgrades
 
 # ---------------------------------------------------------------------------
-log "12/14 System-wide log limits (errors only, 1 week max)"
+log "13/15 System-wide log limits (errors only, 1 week max)"
 # journald's own MaxLevelStore is what "errors only" actually means at the
 # system level: messages below the given level still reach live watchers
 # (journalctl -f, fail2ban's follow-mode) but are never written to disk —
@@ -382,7 +391,7 @@ EOF
 sudo systemctl restart systemd-journald
 
 # ---------------------------------------------------------------------------
-log "13/14 Provisioning summary"
+log "14/15 Provisioning summary"
 sudo ufw status verbose
 echo
 sudo fail2ban-client status sshd || true
@@ -392,7 +401,7 @@ if [[ -n "$WIFI_IP" ]]; then
 fi
 
 # ---------------------------------------------------------------------------
-log "14/14 Installing the dashboard (git clone + deploy-dashboard.sh)"
+log "15/15 Installing the dashboard (git clone + deploy-dashboard.sh)"
 # Untrack data.json/config.py first if this checkout predates them being
 # gitignored — a plain `git pull`/reset would otherwise refuse or (worse,
 # for reset --hard) silently delete a live-modified copy of either file.

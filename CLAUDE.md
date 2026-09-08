@@ -555,7 +555,20 @@ folder (`static/`) is used only for flag images.
   own default arrow cursor was still rendering regardless, since nothing
   else was suppressing it. `-nocursor` tells Xorg not to draw a cursor
   sprite at all. Reported live, fixed without needing a new package
-  (`unclutter` was the alternative, not needed here).
+  (`unclutter` was the alternative, not needed here). **The `.bash_profile`
+  logic that writes this line self-heals an already-existing active line
+  instead of only inserting once** (`sed` in place if `grep` finds one,
+  append only if none exists at all) — the first version of this fix
+  shipped as insert-only, and on a Pi that already had a bare `startx`
+  line from before `-- -nocursor` existed, a redeploy left it untouched
+  (the "already configured" check only asked whether an active line
+  existed, not whether it matched current content), so the cursor fix
+  silently never landed. Caught by actually rebooting and checking
+  `~/.bash_profile` after a "successful" redeploy, not by trusting the
+  script's own exit code. If this line's content ever needs to change
+  again, this self-healing shape means it reaches already-provisioned
+  boards on their next redeploy — an insert-only check would silently
+  leave them behind again.
 - **Wi-Fi scanning can silently return nothing on a truly fresh SD
   card** — the radio can be rfkill-soft-blocked or NetworkManager's own
   Wi-Fi radio toggle can be off, and a scan in either state just comes

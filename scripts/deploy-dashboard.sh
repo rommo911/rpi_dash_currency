@@ -434,7 +434,19 @@ EOF
   # correctly restores it (the old commented block stays too, harmlessly).
   # \b not \s*$ at the end — the line carries "-- -nocursor" now (see
   # below), so it no longer ends right after "startx".
-  if ! grep -qE '^\s*startx\b' "$HOME/.bash_profile" 2>/dev/null; then
+  #
+  # If an active line already exists, SYNC its content instead of leaving
+  # it alone — this is not "insert once and never touch again." Caught
+  # live: a Pi provisioned before -- -nocursor was added kept its old bare
+  # `startx` line untouched across a redeploy, because the old check only
+  # asked "does an active line exist," not "does it match what we'd write
+  # today" — so the cursor fix silently never landed on an
+  # already-provisioned board. Self-healing this way means any future
+  # change to this line reaches existing installs on their next redeploy
+  # too, not just fresh ones.
+  if grep -qE '^\s*startx\b' "$HOME/.bash_profile" 2>/dev/null; then
+    sed -i -E 's|^(\s*)startx\b.*|\1startx -- -nocursor|' "$HOME/.bash_profile"
+  else
     cat >> "$HOME/.bash_profile" <<'PROFILE'
 
 if [ -z "$DISPLAY" ] && [ "$(tty)" = "/dev/tty1" ]; then
