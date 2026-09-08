@@ -105,7 +105,36 @@ scripts/provision-pi.sh       The one script for a fresh SD card. Network
                                deploy-dashboard.sh), clones one, then execs
                                into deploy-dashboard.sh. Works both copied
                                alone onto a fresh card and run from inside
-                               an already-cloned checkout.
+                               an already-cloned checkout. Right before
+                               that handoff, OPTIONALLY offers to run
+                               wifi-ap-fallback.sh (see below) — only
+                               reachable at this point because that script
+                               isn't guaranteed to exist yet earlier (a
+                               copied-alone provision-pi.sh has no sibling
+                               files until it clones the repo itself).
+scripts/wifi-ap-fallback.sh   Adds an emergency AP fallback on top of an
+                               EXISTING NetworkManager Wi-Fi connection —
+                               it doesn't configure normal Wi-Fi itself,
+                               provision-pi.sh's network step (or nmcli/
+                               raspi-config by hand) has to do that first.
+                               Installs a small watchdog
+                               (/usr/local/sbin/wifi-ap-fallback) as its
+                               own systemd service (wifi-ap-fallback,
+                               deliberately NOT prefixed with
+                               currency-dashboard — it's Pi network infra,
+                               independent of the app) that polls
+                               nmcli device state every 15s: if the
+                               primary connection isn't in state 100, it
+                               retries for up to 30s, then brings up an
+                               "Emergency-AP" nmcli AP profile
+                               (192.168.50.1/24, WPA2-PSK) so the Pi stays
+                               reachable; the instant the primary
+                               reconnects, the AP drops automatically —
+                               no manual intervention either direction.
+                               Idempotent/re-runnable: called optionally
+                               from provision-pi.sh, but also safe to run
+                               standalone any time later to change the AP
+                               SSID/password or refresh the watchdog unit.
 scripts/deploy-dashboard.sh   Clones the repo, creates data.json/config.py/
                                auto-update.conf from their templates if
                                missing — the first time config.py is
@@ -580,3 +609,38 @@ folder (`static/`) is used only for flag images.
   unconditionally before every scan (harmless no-ops if already fine),
   and the "no networks found" warning suggests the WLAN Country fix
   (`raspi-config` → Localisation Options → WLAN Country) as a fallback.
+- **`wifi-ap-fallback.sh`'s prompt in `provision-pi.sh` sits at the very
+  end (right before the exec into `deploy-dashboard.sh`), not next to the
+  Wi-Fi step near the top — this is deliberate, not misplaced.** When
+  `provision-pi.sh` is copied alone onto a fresh SD card (its documented
+  "works both ways" mode), nothing else from the repo exists on disk yet
+  at the point Wi-Fi gets configured — `wifi-ap-fallback.sh` only
+  actually exists once the later clone step has run. Don't move this
+  prompt earlier without also handling the copied-alone case (e.g.
+  downloading the script separately) — as written, `$INSTALL_DIR` is
+  guaranteed to hold a full checkout by the time this prompt is reached,
+  in both the copied-alone and already-cloned code paths.
+- **`wifi-ap-fallback.sh` never asks for the primary Wi-Fi's SSID or
+  password — this is intentional, not a missing feature.** It only
+  builds on a Wi-Fi connection that already exists in NetworkManager
+  (freshly created by `provision-pi.sh`'s `connect_wifi()`, or a
+  pre-existing one from `raspi-config`/manual `nmcli`), reusing whatever
+  is already saved there — same reason `provision-pi.sh` passes
+  `WIFI_CONNECTION="$WIFI_SSID"` into it rather than re-prompting. If
+  none exists, it fails fast with a message telling you to set up normal
+  Wi-Fi first, rather than trying to become a second Wi-Fi-setup flow.
+- **The watchdog script it installs is intentionally NOT `set -e`** (only
+  `set -u`) — it runs forever in a `while true` polling loop, and a
+  single transient `nmcli`/DBus failure must be logged and retried on the
+  next 15s tick, not kill the whole daemon. Keep that if you touch it;
+  this mirrors why `disable-kiosk.sh` (a different, one-shot script) also
+  avoids `set -e` for a different reason — see that script's own comment.
+- **The emergency AP profile (`Emergency-AP`) is always deleted and
+  recreated from scratch, never modified in place**, so re-running
+  `wifi-ap-fallback.sh` with a different SSID/password can't leave stale
+  `wifi-sec.*` settings behind from a previous run. The watchdog config
+  file (`/etc/wifi-ap-fallback/config`, root-only, mode 600) stores the
+  device/connection names and timing only — the AP password itself lives
+  solely in NetworkManager's own connection profile
+  (`/etc/NetworkManager/system-connections/`), never duplicated anywhere
+  else on disk.

@@ -427,6 +427,18 @@ if [[ ! -f "$INSTALL_DIR/scripts/deploy-dashboard.sh" ]]; then
   exit 1
 fi
 
+# ---------------------------------------------------------------------------
+log "Optional: emergency Wi-Fi AP fallback"
+read -rp "If this Pi ever loses its Wi-Fi connection, have it broadcast its own emergency Wi-Fi network so you can still reach it? [y/N]: " DO_AP_FALLBACK
+if [[ "${DO_AP_FALLBACK,,}" == "y" ]]; then
+  if [[ -f "$INSTALL_DIR/scripts/wifi-ap-fallback.sh" ]]; then
+    WIFI_CONNECTION="${WIFI_SSID:-}" bash "$INSTALL_DIR/scripts/wifi-ap-fallback.sh" || \
+      warn "AP fallback setup failed — you can re-run scripts/wifi-ap-fallback.sh manually later."
+  else
+    warn "scripts/wifi-ap-fallback.sh not found in $INSTALL_DIR — skipping."
+  fi
+fi
+
 echo "Handing off to deploy-dashboard.sh ..."
 exec env REPO_URL="$REPO_URL" INSTALL_DIR="$INSTALL_DIR" APP_PORT="$APP_PORT" HEADLESS="$HEADLESS" LAN_SUBNET="${LAN_SUBNET:-}" \
   bash "$INSTALL_DIR/scripts/deploy-dashboard.sh"

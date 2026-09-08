@@ -57,6 +57,10 @@ Ships with 4 default currencies: **SYP** (new Syrian pound flag),
 - `scripts/disable-kiosk.sh` — maintenance mode: stops the app and the
   auto-updater, stops kiosk mode from auto-launching, kills any running
   kiosk session. Re-run `deploy-dashboard.sh` to undo
+- `scripts/wifi-ap-fallback.sh` — optional: if the Pi ever loses its
+  configured Wi-Fi, broadcast an emergency AP so you can still reach it,
+  and reconnect automatically once normal Wi-Fi is back. Offered at the
+  end of `provision-pi.sh`, also safe to run on its own any time
 - `scripts/run-local-windows.bat` — test the dashboard on a Windows PC via
   a local Python venv (see below)
 
@@ -165,6 +169,19 @@ nothing that fetches packages runs until a connection is confirmed:
     clone of this repo, clones one; either way it then hands off to
     `scripts/deploy-dashboard.sh` automatically — see below for what that
     does. No second script to run by hand.
+
+Right before that handoff, it also asks: **"If this Pi ever loses its
+Wi-Fi connection, have it broadcast its own emergency Wi-Fi network so you
+can still reach it?"** Say yes to install `scripts/wifi-ap-fallback.sh` — a
+small watchdog service that checks the Wi-Fi connection every 15s and, if
+it's down, starts a Pi-hosted access point (`Pi-Emergency` by default,
+password you set) at `192.168.50.1` so you can connect to it directly and
+fix things (e.g. SSH in over the emergency AP), instead of the Pi
+disappearing from the network entirely. It reconnects to normal Wi-Fi
+automatically — and drops the emergency AP — the moment that network is
+reachable again; no need to intervene either direction. Safe to skip here
+and run standalone later: `bash scripts/wifi-ap-fallback.sh` (it builds on
+whatever Wi-Fi connection is already configured, it doesn't set one up).
 
 ```bash
 sudo reboot
