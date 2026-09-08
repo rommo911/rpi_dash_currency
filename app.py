@@ -653,22 +653,25 @@ DASHBOARD_HTML = """
 let lastUpdatedAt = null;
 let lastHostInfo = { hostname: '', ip: '' };
 
+let hostInfoShown = false;
+
 function showHostInfo() {
+  if (hostInfoShown) return;
   const el = document.getElementById('hostinfo');
   if (!lastHostInfo.hostname && !lastHostInfo.ip) return;
+  hostInfoShown = true;
   // textContent, not innerHTML — no escaping needed, the browser can't
   // interpret this as markup regardless of what the values contain.
   el.textContent = [lastHostInfo.hostname, lastHostInfo.ip].filter(Boolean).join('   ');
   el.classList.add('show');
-  setTimeout(() => el.classList.remove('show'), 5000);
+  setTimeout(() => el.classList.remove('show'), 10000);
 }
 
-// Show the hostname/IP for 5s every 2 minutes, so anyone standing in front
-// of the kiosk screen can read it off without touching anything.
-setTimeout(function cycle() {
-  showHostInfo();
-  setTimeout(cycle, 120000);
-}, 120000);
+// Show the hostname/IP once — 10s, starting 2 minutes after page load —
+// not a repeating cycle. Stays hidden after that until the kiosk session
+// restarts (service restart or reboot reloads the page, resetting
+// hostInfoShown).
+setTimeout(showHostInfo, 120000);
 
 function fmt(n) {
   if (n === null || n === undefined) return '—';
@@ -691,6 +694,22 @@ function safeFlagSrc(src) {
   // Only ever expect a same-origin /static/flags/... path from the API.
   // Reject anything else (e.g. a javascript: URL) before it reaches src=.
   return typeof src === 'string' && src.startsWith('/static/flags/') ? esc(src) : '';
+}
+
+// "Last updated" label only — not free text the admin typed, so (unlike
+// currency names/dashboard title, which are never auto-translated by
+// design) this follows admin_language like the /admin UI chrome does.
+const LAST_UPDATED_LABEL = { en: 'Last updated', ar: 'آخر تحديث' };
+
+function pad2(n) { return String(n).padStart(2, '0'); }
+
+// Fixed HH:MM:SS DD/MM/YYYY (24h, zero-padded) regardless of browser/OS
+// locale — toLocaleString() output varies unpredictably by locale, which
+// is exactly what a wall-mounted kiosk display shouldn't have.
+function formatDateTime(dt) {
+  const time = `${pad2(dt.getHours())}:${pad2(dt.getMinutes())}:${pad2(dt.getSeconds())}`;
+  const date = `${pad2(dt.getDate())}/${pad2(dt.getMonth() + 1)}/${dt.getFullYear()}`;
+  return `${time} ${date}`;
 }
 
 async function refresh() {
@@ -733,7 +752,8 @@ async function refresh() {
     const updated = document.getElementById('updated-at');
     if (d.updated_at) {
       const dt = new Date(d.updated_at * 1000);
-      updated.textContent = 'Last updated ' + dt.toLocaleTimeString();
+      const label = LAST_UPDATED_LABEL[d.admin_language] || LAST_UPDATED_LABEL.en;
+      updated.textContent = `${label} ${formatDateTime(dt)}`;
     }
   } catch (e) {
     document.getElementById('updated-at').textContent = 'Could not load data';
@@ -1009,6 +1029,7 @@ def api_data():
         "title": data["settings"]["title"],
         "subtitle": data["settings"]["subtitle"],
         "show_updated_at": data["settings"]["show_updated_at"],
+        "admin_language": data["settings"]["admin_language"],
         "hostname": socket.gethostname(),
         "ip": get_lan_ip(),
     })

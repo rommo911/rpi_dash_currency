@@ -409,6 +409,13 @@ setup_console_x() {
   # case; it auto-maximizes any window it manages. Give it a moment to
   # start before Chromium maps its window, or the race can lose the same
   # way.
+  #
+  # The mouse pointer (visible on screen despite no mouse being attached)
+  # is hidden at the Xorg SERVER level via `startx -- -nocursor` below,
+  # not just matchbox's own -use_cursor no (which only controls whether
+  # matchbox itself draws/manages a cursor for the root window — the
+  # default X-server arrow cursor was still rendering on top of that).
+  # -nocursor tells Xorg not to draw a cursor sprite at all, ever.
   sudo apt install -y xserver-xorg xinit matchbox-window-manager
   cat > "$HOME/.xinitrc" <<EOF
 xset -dpms
@@ -425,11 +432,13 @@ EOF
   # deploy-dashboard.sh wrongly think kiosk autostart is already configured
   # and silently skip re-adding it. This way a redeploy after disabling
   # correctly restores it (the old commented block stays too, harmlessly).
-  if ! grep -qE '^\s*startx\s*$' "$HOME/.bash_profile" 2>/dev/null; then
+  # \b not \s*$ at the end — the line carries "-- -nocursor" now (see
+  # below), so it no longer ends right after "startx".
+  if ! grep -qE '^\s*startx\b' "$HOME/.bash_profile" 2>/dev/null; then
     cat >> "$HOME/.bash_profile" <<'PROFILE'
 
 if [ -z "$DISPLAY" ] && [ "$(tty)" = "/dev/tty1" ]; then
-  startx
+  startx -- -nocursor
 fi
 PROFILE
   fi

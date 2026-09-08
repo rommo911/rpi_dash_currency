@@ -71,6 +71,18 @@ connect_wifi() {
     warn "Connect Ethernet instead, or configure Wi-Fi with 'sudo raspi-config'."
     return 1
   fi
+
+  # On a fresh SD card the radio can be soft-blocked (rfkill) or the
+  # NetworkManager wifi radio can be off — either one makes a scan return
+  # nothing with no error at all, which looks identical to "no networks
+  # nearby." Confirmed in practice: a first run's scan came back empty,
+  # and only running raspi-config's own Wi-Fi setup (which unblocks/turns
+  # this on as a side effect) fixed it. Unconditionally unblock/enable
+  # before every scan — harmless no-ops if already fine.
+  sudo rfkill unblock wifi 2>/dev/null || true
+  sudo nmcli radio wifi on 2>/dev/null || true
+  sleep 1
+
   WIFI_DEV="$(nmcli -t -f DEVICE,TYPE device status | awk -F: '$2=="wifi"{print $1; exit}')" || true
   if [[ -z "$WIFI_DEV" ]]; then
     warn "No Wi-Fi device detected."
@@ -106,6 +118,9 @@ connect_wifi() {
     read -rp "Enter a number from the list, or type an SSID directly (leave blank to skip): " WIFI_INPUT
   else
     warn "No networks found in the scan — you can still type a hidden network's SSID directly."
+    warn "If that's not it either: the Wi-Fi country/region may not be set yet, which can block"
+    warn "scanning with no error. Try 'sudo raspi-config' -> Localisation Options -> WLAN Country,"
+    warn "then re-run this script."
     read -rp "SSID to connect to (leave blank to skip): " WIFI_INPUT
   fi
 

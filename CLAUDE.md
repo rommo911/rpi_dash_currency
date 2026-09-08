@@ -298,7 +298,18 @@ folder (`static/`) is used only for flag images.
 - **i18n**: `TRANSLATIONS` dict (`en`/`ar`) covers only the `/admin` UI
   chrome (labels, buttons, error messages). Currency names and the
   dashboard title/subtitle are free text the admin typed — never
-  auto-translated, by design (the user explicitly asked for this).
+  auto-translated, by design (the user explicitly asked for this). The
+  **public dashboard's "Last updated" label is the one exception** — it's
+  UI chrome the app generates, not admin-typed content, so it DOES follow
+  `admin_language` (added on request): `/api/data` now includes
+  `admin_language`, and `DASHBOARD_HTML`'s JS picks the label from a small
+  `LAST_UPDATED_LABEL` object (`{en: 'Last updated', ar: 'آخر تحديث'}`).
+  The date/time next to it is built manually (`formatDateTime()`, fixed
+  `HH:MM:SS DD/MM/YYYY`, zero-padded) instead of
+  `toLocaleTimeString()`/`toLocaleString()` — those vary unpredictably by
+  browser/OS locale, wrong for a wall-mounted kiosk that needs a
+  consistent, predictable format regardless of what the browser's locale
+  happens to be set to.
 - **Single save button**: `/admin` has ONE form covering dashboard
   settings + every currency row. Per-row "Remove" buttons are separate,
   submitted via the HTML5 `form="delete-{code}"` attribute pointing at a
@@ -326,15 +337,21 @@ folder (`static/`) is used only for flag images.
   for the flag `src=` specifically, `safeFlagSrc()` (origin/path allowlist
   on top of escaping). If you add new fields to card rendering, escape
   them the same way — don't reintroduce raw interpolation.
-- **On-screen hostname/IP overlay**: `#hostinfo`, fixed bottom-left,
-  fades in for 5s every 120s (client-side `setTimeout` chain in
-  `DASHBOARD_HTML`, timer starts from page load). Uses `el.textContent =
-  ...`, not `innerHTML` — no `esc()` needed there, textContent can't be
-  interpreted as markup regardless of content. Sourced from `hostname`/
-  `ip` on the `/api/data` payload (`get_lan_ip()`: UDP-connects to
-  8.8.8.8 without sending a packet, just to read back the outbound-route
-  local address; falls back to `socket.gethostbyname(gethostname())`,
-  then `127.0.0.1`).
+- **On-screen hostname/IP overlay**: `#hostinfo`, fixed bottom-left, shows
+  **once** — 10s, starting 2 minutes after page load — not a repeating
+  cycle (it was originally repeating every 2 minutes; changed on request
+  to show only once per kiosk session). `hostInfoShown` (a plain JS
+  variable) latches it after the first show; nothing resets that until the
+  page itself reloads, which for the kiosk only happens on a service
+  restart or reboot. Uses `el.textContent = ...`, not `innerHTML` — no
+  `esc()` needed there, textContent can't be interpreted as markup
+  regardless of content. Sourced from `hostname`/`ip` on the `/api/data`
+  payload (`get_lan_ip()`: UDP-connects to 8.8.8.8 without sending a
+  packet, just to read back the outbound-route local address; falls back
+  to `socket.gethostbyname(gethostname())`, then `127.0.0.1`). The 2-minute
+  delay is safe against "data not loaded yet" — `.xinitrc` already blocks
+  launching Chromium until `/api/data` responds, so by 120s post-page-load
+  it's had dozens of successful 3s-interval polls.
 - **Auto-update control lives in flag FILES, not `data.json`** — a
   deliberate choice (matches how the rest of this project keeps runtime
   state separate from tracked templates). `AUTO_UPDATE_ENABLED_FLAG`
@@ -516,12 +533,37 @@ folder (`static/`) is used only for flag images.
   that it logs every single request at INFO (`"GET /api/data ... 200 -"`
   on every 3s poll), which is what was flooding `systemctl status`
   output before this.
-- **`setup_console_x()`'s `startx` detection must stay an exact-line
-  match (`grep -qE '^\s*startx\s*$'`), not a substring `grep -q
-  "startx"`.** `scripts/disable-kiosk.sh` neutralizes kiosk autostart by
-  commenting that exact line out (leaving the word "startx" present in
-  the comment) — a substring match would still find it and
+- **`setup_console_x()`'s `startx` detection must stay a line-start word
+  match (`grep -qE '^\s*startx\b'`), not a substring `grep -q "startx"`,
+  and not the narrower `'^\s*startx\s*$'` used before the cursor fix
+  below (that end-of-line anchor stopped matching once the line grew
+  trailing args).** `scripts/disable-kiosk.sh` neutralizes kiosk autostart
+  by replacing that whole line (leaving the word "startx" present in a
+  comment) — a substring match would still find it and
   `deploy-dashboard.sh` would wrongly conclude kiosk autostart was
   already configured, silently skipping re-adding it, so a redeploy after
-  disabling would NOT actually restore kiosk mode. Verified both
-  directions with a scripted test before this shipped.
+  disabling would NOT actually restore kiosk mode. `\b` (not `\s*$`)
+  is what lets this correctly match `startx -- -nocursor` too, while
+  still correctly NOT matching the disabled `: # startx ...` line (which
+  starts with `:`, not "startx"). Verified all of this with a scripted
+  test before it shipped, both when the line was bare `startx` and after
+  it grew the `-- -nocursor` argument.
+- **The mouse pointer, visible on screen despite no mouse being attached,
+  is hidden via `startx -- -nocursor` (an Xorg SERVER flag), not
+  matchbox's `-use_cursor no`.** The latter only controls whether matchbox
+  itself draws/manages a cursor for windows it manages — the X server's
+  own default arrow cursor was still rendering regardless, since nothing
+  else was suppressing it. `-nocursor` tells Xorg not to draw a cursor
+  sprite at all. Reported live, fixed without needing a new package
+  (`unclutter` was the alternative, not needed here).
+- **Wi-Fi scanning can silently return nothing on a truly fresh SD
+  card** — the radio can be rfkill-soft-blocked or NetworkManager's own
+  Wi-Fi radio toggle can be off, and a scan in either state just comes
+  back empty with no error, indistinguishable from "no networks nearby."
+  Reported live: a first run's scan found nothing, and running
+  `raspi-config`'s own Wi-Fi setup (which unblocks/enables the radio as a
+  side effect) fixed it for a later run of this script. `connect_wifi()`
+  now runs `sudo rfkill unblock wifi` and `sudo nmcli radio wifi on`
+  unconditionally before every scan (harmless no-ops if already fine),
+  and the "no networks found" warning suggests the WLAN Country fix
+  (`raspi-config` → Localisation Options → WLAN Country) as a fallback.

@@ -44,7 +44,9 @@ else
 fi
 
 log "Disabling kiosk auto-boot"
-if [[ -f "$HOME/.bash_profile" ]] && grep -qE '^\s*startx\s*$' "$HOME/.bash_profile"; then
+# \b, not \s*$ — deploy-dashboard.sh's startx line now carries "-- -nocursor"
+# (hides the mouse pointer), so it no longer ends right after "startx".
+if [[ -f "$HOME/.bash_profile" ]] && grep -qE '^\s*startx\b' "$HOME/.bash_profile"; then
   cp "$HOME/.bash_profile" "$HOME/.bash_profile.bak.$(date +%s)"
   # `:` (a real, valid no-op command), NOT a bare comment -- replacing the
   # only statement inside an if/then/fi with just a comment leaves an
@@ -54,8 +56,10 @@ if [[ -f "$HOME/.bash_profile" ]] && grep -qE '^\s*startx\s*$' "$HOME/.bash_prof
   # redeployed, otherwise-correct startx block. Confirmed live: this
   # exact bug caused a real Pi's kiosk to never come back after
   # disable-kiosk.sh + a redeploy, verified with a standalone repro before
-  # this fix (see CLAUDE.md).
-  sed -i -E 's/^(\s*)startx\s*$/\1: # startx disabled by disable-kiosk.sh -- re-run deploy-dashboard.sh to restore/' "$HOME/.bash_profile"
+  # this fix (see CLAUDE.md). Whole line replaced (not just the "startx"
+  # word) since any trailing args (-- -nocursor) don't need preserving —
+  # re-running deploy-dashboard.sh always writes the current correct line.
+  sed -i -E 's/^(\s*)startx\b.*/\1: # startx disabled by disable-kiosk.sh -- re-run deploy-dashboard.sh to restore/' "$HOME/.bash_profile"
   echo "Commented out the 'startx' line in ~/.bash_profile — kiosk will no longer auto-launch on boot."
 else
   echo "No active 'startx' line found in ~/.bash_profile — already disabled, or console+X kiosk was never configured on this board."
