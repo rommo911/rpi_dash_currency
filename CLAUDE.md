@@ -12,9 +12,12 @@ icons, edit the dashboard title/subtitle, switch the admin UI language
 `/admin` is served over **self-signed HTTPS** (auto-generated and
 auto-renewed) with several brute-force/CSRF protections layered on top; the
 dashboard itself always stays on plain HTTP for the kiosk. The deployed app
-also auto-updates itself from git every 2 hours and shows the Pi's
-hostname/IP on-screen periodically. See "Architecture notes" below for how
-each of these actually works.
+can auto-update itself from git every 6 hours — opt-in via an "Enable
+automatic updates" checkbox in the admin panel, or on demand via a "Check
+for updates now" button there — and shows the Pi's hostname/IP on-screen
+periodically. The admin panel also shows the currently deployed version
+(`VERSION` file + git commit). See "Architecture notes" below for how each
+of these actually works.
 
 Repo: https://github.com/rommo911/rpi_dash_currency
 
@@ -37,6 +40,27 @@ data.json                     Runtime state: currencies list + settings.
                                data.default.json.
 data.default.json             Tracked template for data.json (the shipped
                                default currencies/settings).
+VERSION                        Tracked, single line, e.g. "1.1.0". Bump by
+                               hand for a meaningful release — nothing
+                               bumps it automatically. app.py reads it at
+                               startup (_read_version()) and shows it (plus
+                               the current git commit, best-effort) in the
+                               admin panel's Updates card.
+auto-update.enabled            GITIGNORED flag file — its mere presence
+                               means the admin panel's "Enable automatic
+                               updates" checkbox is checked.
+                               admin_save_all() in app.py creates/removes
+                               it; scripts/auto-update.sh checks for it
+                               before doing any git/network work on a
+                               scheduled (timer) run.
+auto-update.check-now          GITIGNORED flag file, one-shot. Touched by
+                               the admin panel's "Check for updates now"
+                               button (admin_check_update_now() in app.py),
+                               which also starts the updater service
+                               immediately. auto-update.sh deletes it after
+                               one run, regardless of the enabled flag
+                               above — a manual click always does
+                               something.
 requirements.txt               Just Flask.
 static/flags/                 Flag icon PNGs. 4 ship with the repo
                                (sy/us/eu/tr.png). More get added here
@@ -49,7 +73,17 @@ scripts/provision-pi.sh       The one script for a fresh SD card. Network
                                FIRST (checks for existing internet, else
                                loops on Wi-Fi via nmcli until connected —
                                apt/git both need it and nothing installs
-                               before it's confirmed), enable sshd, then
+                               before it's confirmed). Wi-Fi picking:
+                               scans, lists nearby SSIDs numbered (dedup'd,
+                               strongest listed as scanned — see
+                               connect_wifi()), and accepts either a number
+                               from that list or a typed SSID directly (for
+                               hidden networks, or anything not in the
+                               scan) — --escape no on the nmcli terse
+                               output keeps parsing simple, at the cost of
+                               mis-parsing an SSID containing a literal ':'
+                               (rare enough for a provisioning prompt not
+                               to matter). Enable sshd, then
                                OPTIONALLY purges pre-installed bloat
                                (rpi-connect, LibreOffice, Wolfram, Scratch,
                                Minecraft, Sonic Pi, Thonny, Node-RED, Claws
@@ -85,12 +119,24 @@ scripts/deploy-dashboard.sh   Clones the repo, creates data.json/config.py/
                                from an unspecified encoding before that was
                                added, keep the encoding="utf-8" args on
                                both read_text/write_text if you touch this)
-                               — then builds the venv, generates the HTTPS
-                               cert, installs the systemd service (with
-                               APP_PORT/HTTPS_PORT env vars), opens the HTTPS
-                               port through ufw, installs the auto-updater
-                               (sudoers rule + systemd timer) and a fail2ban
-                               jail for admin brute-force attempts, then sets
+                               — also creates auto-update.enabled (default
+                               ON) but ONLY on that same first-deploy
+                               condition, never on a later redeploy, so a
+                               redeploy can't silently re-enable it after
+                               an admin explicitly unchecked it in the
+                               panel — then builds the venv, generates the
+                               HTTPS cert, installs the systemd service
+                               (with APP_PORT/HTTPS_PORT env vars), opens
+                               the HTTPS port through ufw, installs the
+                               auto-updater (sudoers rule for BOTH
+                               `systemctl restart <service>` and
+                               `systemctl start <service>-updater.service`
+                               — the second one is what the admin panel's
+                               "check now" button runs, keep both in sync
+                               with app.py's admin_check_update_now() if
+                               either changes — + a systemd timer, every
+                               6h) and a fail2ban jail for admin
+                               brute-force attempts, then sets
                                up kiosk-mode Chromium autostart. Kiosk is
                                ALWAYS on by default — headless mode (skip
                                Chromium) is opt-in only via HEADLESS=true,
@@ -289,6 +335,30 @@ folder (`static/`) is used only for flag images.
   8.8.8.8 without sending a packet, just to read back the outbound-route
   local address; falls back to `socket.gethostbyname(gethostname())`,
   then `127.0.0.1`).
+- **Auto-update control lives in flag FILES, not `data.json`** — a
+  deliberate choice (matches how the rest of this project keeps runtime
+  state separate from tracked templates). `AUTO_UPDATE_ENABLED_FLAG`
+  (`auto-update.enabled`) is a boolean-by-presence: the "Enable automatic
+  updates" checkbox in `admin_save_all()` creates/removes it, and
+  `scripts/auto-update.sh` treats its absence as "scheduled run is a
+  no-op." `AUTO_UPDATE_CHECK_NOW_FLAG` (`auto-update.check-now`) is a
+  one-shot override: `admin_check_update_now()` touches it and fires
+  `subprocess.Popen(["sudo", "-n", "systemctl", "start",
+  f"{SERVICE_NAME}-updater.service"], ...)` — deliberately **not**
+  waiting for it (`Popen`, not `run`/`check_call`): if an update is
+  actually applied, the updater restarts this very Flask process partway
+  through, so nothing in the request handler can safely block on it.
+  `auto-update.sh` deletes the check-now flag after one run regardless of
+  the enabled flag, so a manual click always does something even when
+  auto-update is otherwise disabled. If you rename `SERVICE_NAME` (also
+  hardcoded to `"currency-dashboard"` in `deploy-dashboard.sh`, not an env
+  var — the two must match), update both.
+- **Versioning**: `VERSION` (repo root, one line, e.g. `1.1.0`) is read
+  once at import (`_read_version()`) and shown in the admin panel's
+  Updates card alongside the current git commit (`_read_git_commit()`,
+  best-effort via `git rev-parse --short HEAD`, `None` if git or `.git`
+  isn't available — e.g. a zip-deployed copy). Nothing bumps `VERSION`
+  automatically; bump it by hand for a release that's worth distinguishing.
 
 ## Things to watch for
 

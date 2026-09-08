@@ -80,10 +80,43 @@ connect_wifi() {
   log "Scanning for networks on $WIFI_DEV..."
   sudo nmcli device wifi rescan ifname "$WIFI_DEV" >/dev/null 2>&1 || true
   sleep 2
-  nmcli --fields SSID,SIGNAL,SECURITY device wifi list ifname "$WIFI_DEV" 2>/dev/null | awk '!seen[$0]++' || true
 
-  read -rp "SSID to connect to (leave blank to skip): " WIFI_SSID
-  [[ -z "$WIFI_SSID" ]] && return 1
+  # Numbered list, deduplicated by SSID (multiple APs/bands for the same
+  # network show up as separate scan results otherwise). --escape no keeps
+  # the terse output plain (no backslash-escaping of ':' inside field
+  # values) so it's simple to split on ':' — the trade-off is an SSID that
+  # itself contains a literal ':' would parse wrong, rare enough for a
+  # provisioning prompt not to matter.
+  WIFI_SCAN_NAMES=()
+  WIFI_SCAN_ROWS=()
+  while IFS=: read -r ssid signal security; do
+    [[ -z "$ssid" ]] && continue  # hidden/blank SSID entries aren't selectable by name
+    WIFI_SCAN_NAMES+=("$ssid")
+    WIFI_SCAN_ROWS+=("$ssid|$signal|${security:-open}")
+  done < <(nmcli --escape no -t -f SSID,SIGNAL,SECURITY device wifi list ifname "$WIFI_DEV" 2>/dev/null | awk -F: '!seen[$1]++')
+
+  if [[ "${#WIFI_SCAN_NAMES[@]}" -gt 0 ]]; then
+    echo "Nearby networks:"
+    local i=1 row ssid signal security
+    for row in "${WIFI_SCAN_ROWS[@]}"; do
+      IFS='|' read -r ssid signal security <<<"$row"
+      printf "  %2d) %-32s signal:%-4s %s\n" "$i" "$ssid" "$signal" "$security"
+      ((i++))
+    done
+    read -rp "Enter a number from the list, or type an SSID directly (leave blank to skip): " WIFI_INPUT
+  else
+    warn "No networks found in the scan — you can still type a hidden network's SSID directly."
+    read -rp "SSID to connect to (leave blank to skip): " WIFI_INPUT
+  fi
+
+  if [[ -z "$WIFI_INPUT" ]]; then
+    return 1
+  elif [[ "$WIFI_INPUT" =~ ^[0-9]+$ ]] && (( WIFI_INPUT >= 1 && WIFI_INPUT <= ${#WIFI_SCAN_NAMES[@]} )); then
+    WIFI_SSID="${WIFI_SCAN_NAMES[$((WIFI_INPUT - 1))]}"
+    echo "Selected: $WIFI_SSID"
+  else
+    WIFI_SSID="$WIFI_INPUT"
+  fi
 
   read -rsp "Password for '$WIFI_SSID' (leave blank for an open network): " WIFI_PASS
   echo

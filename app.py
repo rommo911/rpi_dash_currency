@@ -19,6 +19,7 @@ import re
 import secrets
 import socket
 import ssl
+import subprocess
 import threading
 import time
 import unicodedata
@@ -38,7 +39,47 @@ CERT_FILE = os.path.join(SSL_DIR, "cert.pem")
 KEY_FILE = os.path.join(SSL_DIR, "key.pem")
 LOG_DIR = os.path.join(APP_DIR, "logs")
 LOG_FILE = os.path.join(LOG_DIR, "app.log")
+VERSION_FILE = os.path.join(APP_DIR, "VERSION")
 ALLOWED_FLAG_EXTS = {"png", "jpg", "jpeg", "webp", "svg"}
+
+# Auto-update control: scripts/auto-update.sh (run every 6h by a systemd
+# timer) checks these two flag files before doing any git/network work.
+# AUTO_UPDATE_ENABLED_FLAG's presence is the admin-panel "Enable automatic
+# updates" checkbox (admin_save_all() touches/removes it); its absence
+# means the scheduled run is a no-op. AUTO_UPDATE_CHECK_NOW_FLAG is a
+# one-shot override — the "Check for updates now" button touches it and
+# also starts the updater service immediately (via sudo, see
+# deploy-dashboard.sh's sudoers rule) instead of waiting for the next
+# scheduled tick; the script deletes it after one run regardless of the
+# enabled flag, so a manual check always happens once.
+AUTO_UPDATE_ENABLED_FLAG = os.path.join(APP_DIR, "auto-update.enabled")
+AUTO_UPDATE_CHECK_NOW_FLAG = os.path.join(APP_DIR, "auto-update.check-now")
+SERVICE_NAME = "currency-dashboard"
+
+
+def _read_version():
+    try:
+        with open(VERSION_FILE, encoding="utf-8") as f:
+            return f.read().strip() or "unknown"
+    except OSError:
+        return "unknown"
+
+
+def _read_git_commit():
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "--short", "HEAD"],
+            cwd=APP_DIR, capture_output=True, text=True, timeout=3, check=False,
+        )
+        if result.returncode == 0:
+            return result.stdout.strip()
+    except (OSError, subprocess.SubprocessError):
+        pass
+    return None
+
+
+APP_VERSION = _read_version()
+APP_COMMIT = _read_git_commit()
 
 APP_PORT = int(os.environ.get("APP_PORT", "5000"))
 HTTPS_PORT = int(os.environ.get("HTTPS_PORT", "5443"))
@@ -170,6 +211,11 @@ TRANSLATIONS = {
         "err_flag_fetch_failed": "Couldn't auto-suggest a flag for {code} (no internet, or no match) — add it again and upload an image instead",
         "err_not_found": "Currency {code} not found",
         "err_csrf": "Session expired — please try again.",
+        "updates_heading": "Updates",
+        "version_label": "Version",
+        "auto_update_label": "Enable automatic updates (checks every 6 hours)",
+        "check_now_btn": "Check for updates now",
+        "check_now_started": "Update check started — this page may briefly stop responding if an update is applied. Refresh in about 30 seconds.",
     },
     "ar": {
         "panel_title": "لوحة التحكم",
@@ -211,6 +257,11 @@ TRANSLATIONS = {
         "err_flag_fetch_failed": "تعذّر اقتراح علم لـ {code} (لا يوجد اتصال بالإنترنت أو لا تطابق) — أضفه مرة أخرى وارفع صورة بدلاً من ذلك",
         "err_not_found": "العملة {code} غير موجودة",
         "err_csrf": "انتهت الجلسة — يرجى المحاولة مرة أخرى.",
+        "updates_heading": "التحديثات",
+        "version_label": "الإصدار",
+        "auto_update_label": "تفعيل التحديثات التلقائية (تحقق كل 6 ساعات)",
+        "check_now_btn": "التحقق من التحديثات الآن",
+        "check_now_started": "بدأ التحقق من التحديث — قد تتوقف هذه الصفحة عن الاستجابة لفترة وجيزة إذا تم تطبيق تحديث. حدّث الصفحة بعد حوالي 30 ثانية.",
     },
 }
 
@@ -861,6 +912,12 @@ ADMIN_HTML = """
   <form id="delete-{{ c.code }}" method="post" action="{{ url_for('admin_delete_currency', code=c.code) }}"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"></form>
   {% endfor %}
 
+  <!-- Same standalone-form pattern as the per-currency delete forms above:
+       "Check for updates now" is a distinct action from saving settings,
+       so it submits its own tiny form via the button's form="..."
+       attribute rather than nesting inside the big save-all form. -->
+  <form id="check-update-now" method="post" action="{{ url_for('admin_check_update_now') }}"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"></form>
+
   <form method="post" action="{{ url_for('admin_save_all') }}">
     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
     <div class="settings-card">
@@ -875,6 +932,17 @@ ADMIN_HTML = """
           <input type="text" id="subtitle" name="subtitle" value="{{ settings.subtitle }}" maxlength="{{ max_subtitle_len }}">
         </div>
         <label class="chk"><input type="checkbox" name="show_updated_at" {% if settings.show_updated_at %}checked{% endif %}> {{ t.show_updated_label }}</label>
+      </div>
+    </div>
+
+    <div class="settings-card">
+      <h2>{{ t.updates_heading }}</h2>
+      <div class="fields">
+        <div style="color:var(--text-dim); font-size:0.9rem;">
+          {{ t.version_label }}: <strong style="color:var(--text-main);">{{ app_version }}</strong>{% if app_commit %} <span style="opacity:0.7;">({{ app_commit }})</span>{% endif %}
+        </div>
+        <label class="chk"><input type="checkbox" name="auto_update_enabled" {% if auto_update_enabled %}checked{% endif %}> {{ t.auto_update_label }}</label>
+        <button type="submit" form="check-update-now" class="save">{{ t.check_now_btn }}</button>
       </div>
     </div>
 
@@ -968,6 +1036,9 @@ def admin_page():
         max_code_len=MAX_CODE_LEN,
         max_price_value=MAX_PRICE_VALUE,
         csrf_token=csrf_token(),
+        app_version=APP_VERSION,
+        app_commit=APP_COMMIT,
+        auto_update_enabled=os.path.isfile(AUTO_UPDATE_ENABLED_FLAG),
     )
 
 
@@ -1042,8 +1113,49 @@ def admin_save_all():
     data["settings"]["subtitle"] = subtitle
     data["settings"]["show_updated_at"] = "show_updated_at" in request.form
 
+    # Auto-update enabled/disabled is a flag FILE, not a data.json field —
+    # scripts/auto-update.sh checks for this file's existence directly (see
+    # its own comments), so this is the one place that file gets
+    # created/removed.
+    if "auto_update_enabled" in request.form:
+        open(AUTO_UPDATE_ENABLED_FLAG, "a", encoding="utf-8").close()
+    else:
+        try:
+            os.remove(AUTO_UPDATE_ENABLED_FLAG)
+        except FileNotFoundError:
+            pass
+
     save_data(data)
     return redirect(url_for("admin_page", msg=t["settings_saved"]))
+
+
+@app.route("/admin/check-update-now", methods=["POST"])
+def admin_check_update_now():
+    unauthorized = require_admin_auth()
+    if unauthorized:
+        return unauthorized
+    data = load_data()
+    _, t = get_translations(data)
+    if not check_csrf():
+        return redirect(url_for("admin_page", error=t["err_csrf"]))
+
+    # Touching this flag makes auto-update.sh run its check unconditionally
+    # on its next invocation, regardless of the enabled flag, and delete
+    # the flag afterward (see that script). Starting the updater service
+    # directly makes that "next invocation" happen right now instead of
+    # waiting for the timer — fire-and-forget (Popen, not run/check_call):
+    # if an update is actually applied, the updater restarts this very
+    # service partway through, so nothing here can safely wait on it.
+    open(AUTO_UPDATE_CHECK_NOW_FLAG, "a", encoding="utf-8").close()
+    try:
+        subprocess.Popen(
+            ["sudo", "-n", "systemctl", "start", f"{SERVICE_NAME}-updater.service"],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+    except OSError:
+        pass  # the flag file alone still guarantees a check on the next scheduled tick
+
+    return redirect(url_for("admin_page", msg=t["check_now_started"]))
 
 
 @app.route("/admin/currency/<code>/delete", methods=["POST"])

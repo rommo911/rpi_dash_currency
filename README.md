@@ -123,10 +123,11 @@ fresh Pi typically has neither Ethernet nor Wi-Fi configured yet, so
 nothing that fetches packages runs until a connection is confirmed:
 
 1. **Network**: checks for an existing internet connection (e.g. Ethernet
-   already plugged in); if none, scans for nearby Wi-Fi networks (via
-   `nmcli`) and connects to one you pick, with a choice of DHCP or a static
-   IP (address, gateway, DNS) — retries if it fails, and refuses to
-   continue until a connection is confirmed working
+   already plugged in); if none, scans for nearby Wi-Fi networks and lists
+   them numbered — pick a network by its number, or type an SSID directly
+   (for a hidden network, or anything the scan missed) — then a choice of
+   DHCP or a static IP (address, gateway, DNS). Retries if it fails, and
+   refuses to continue until a connection is confirmed working
 2. Enables **SSH**
 3. **Optionally removes pre-installed bloat** (Raspberry Pi Connect,
    LibreOffice, Wolfram Engine, Scratch, Minecraft, Sonic Pi, Thonny,
@@ -245,18 +246,32 @@ redirected to HTTPS, so the kiosk browser pointed at
 
 ### Keeping it updated
 
-A systemd timer runs `scripts/auto-update.sh` every 2 hours (starting 5
-minutes after boot): it fetches the branch named in
-`scripts/auto-update.conf` (default `main`), fast-resets to it if there's
-anything new, reinstalls Python deps if `requirements.txt` changed, checks/
-renews the HTTPS cert, and restarts the service if anything changed. Live
-data (`data.json`) and the real admin password (`config.py`) are gitignored
-and never touched by this, no matter what changes upstream.
+A systemd timer runs `scripts/auto-update.sh` every 6 hours (starting 5
+minutes after boot), but it only actually does anything if **"Enable
+automatic updates" is checked in the admin panel's Updates card** —
+checked by default on a fresh install, unchecked and it stays unchecked
+(a later redeploy won't silently turn it back on). When enabled, each run
+fetches the branch named in `scripts/auto-update.conf` (default `main`),
+fast-resets to it if there's anything new, reinstalls Python deps if
+`requirements.txt` changed, checks/renews the HTTPS cert, and restarts the
+service if anything changed. Live data (`data.json`) and the real admin
+password (`config.py`) are gitignored and never touched by this, no matter
+what changes upstream.
+
+The same Updates card has a **"Check for updates now" button** — runs a
+check immediately (starts the updater service right away, rather than
+waiting for the timer) regardless of whether automatic updates are
+enabled; a manual click always does something. The page may briefly stop
+responding if an update is actually applied, since the service restarts
+partway through — just refresh after a few seconds.
+
+The Updates card also shows the **currently deployed version** (from the
+repo's `VERSION` file, plus the git commit if available).
 
 To track a different branch, edit `scripts/auto-update.conf` on the Pi
-(`BRANCH=your-branch`) — takes effect on the next scheduled run, or
-immediately with `sudo systemctl start currency-dashboard-updater`. Check
-its logs any time with `journalctl -u currency-dashboard-updater`.
+(`BRANCH=your-branch`) — takes effect on the next scheduled or manual
+check. Check the updater's logs any time with
+`journalctl -u currency-dashboard-updater`.
 
 ### On-screen hostname/IP
 

@@ -1,11 +1,13 @@
-# Config for scripts/auto-update.sh, read every run (roughly every 2 hours,
-# via the currency-dashboard-updater systemd timer).
+# Config for scripts/auto-update.sh, read every run (roughly every 6 hours,
+# via the currency-dashboard-updater systemd timer — only if "Enable
+# automatic updates" is checked in the admin panel; see auto-update.enabled).
 #
 # deploy-dashboard.sh copies this file to auto-update.conf (untracked,
 # gitignored — your local choice here is never touched by git pulls) the
 # first time it runs. Edit auto-update.conf, not this file, to change
-# branch. Takes effect on the next scheduled run, or immediately with:
-#   sudo systemctl start currency-dashboard-updater
+# branch. Takes effect on the next scheduled run, or immediately with the
+# admin panel's "Check for updates now" button (or by hand:
+# sudo systemctl start currency-dashboard-updater).
 
 # Branch to track. The updater fetches this branch from "origin" and, if
 # it's ahead of the local checkout, fast-resets to it and restarts the

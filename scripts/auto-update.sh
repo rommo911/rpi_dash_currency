@@ -1,9 +1,20 @@
 #!/usr/bin/env bash
 # Auto-updater: fetch the configured branch, fast-reset to it if it's
 # ahead, reinstall deps if requirements.txt changed, renew the TLS cert if
-# needed, and restart the service if anything changed. Run every ~2 hours
+# needed, and restart the service if anything changed. Run every ~6 hours
 # by the currency-dashboard-updater systemd timer (installed by
 # deploy-dashboard.sh) — also safe to run by hand any time.
+#
+# Gated by two flag files the admin panel controls (see app.py):
+#   auto-update.enabled     Presence = the "Enable automatic updates"
+#                            checkbox is checked. Absent = a scheduled
+#                            (timer-triggered) run is a no-op.
+#   auto-update.check-now   Touched by the "Check for updates now" button,
+#                            which also starts this service immediately.
+#                            Its presence forces a check THIS run
+#                            regardless of the enabled flag (a manual
+#                            click always does something); deleted after
+#                            one run either way.
 #
 # data.json and config.py are gitignored (data.default.json /
 # config.py.example are the tracked templates deploy-dashboard.sh copies
@@ -38,6 +49,20 @@ cd "$INSTALL_DIR"
 
 if [[ ! -d .git ]]; then
   warn "$INSTALL_DIR is not a git checkout — nothing to update."
+  exit 0
+fi
+
+ENABLED_FLAG="$INSTALL_DIR/auto-update.enabled"
+CHECK_NOW_FLAG="$INSTALL_DIR/auto-update.check-now"
+
+FORCE_RUN=false
+if [[ -f "$CHECK_NOW_FLAG" ]]; then
+  FORCE_RUN=true
+  rm -f "$CHECK_NOW_FLAG"
+fi
+
+if [[ "$FORCE_RUN" != true && ! -f "$ENABLED_FLAG" ]]; then
+  log "Automatic updates are disabled in the admin panel — skipping (not a manual check-now)."
   exit 0
 fi
 

@@ -102,6 +102,16 @@ fi
 if [[ ! -f "$INSTALL_DIR/scripts/auto-update.conf" ]]; then
   cp "$INSTALL_DIR/scripts/auto-update.conf.example" "$INSTALL_DIR/scripts/auto-update.conf"
 fi
+# Auto-update is a flag FILE (see app.py/auto-update.sh), not a data.json
+# setting — the admin panel's "Enable automatic updates" checkbox
+# creates/removes it directly. Defaults to present (enabled) ONLY on a
+# genuinely fresh install (tied to NEW_CONFIG, same signal the password
+# prompt above uses) — matching this project's previous always-on
+# behavior for a first deploy, without ever re-enabling it behind an
+# admin's back on a later redeploy after they've explicitly unchecked it.
+if [[ "$NEW_CONFIG" == true ]]; then
+  touch "$INSTALL_DIR/auto-update.enabled" 2>/dev/null || true
+fi
 if [[ "$NEW_CONFIG" == true ]]; then
   # -t 0 guards against a non-interactive run (automation, `ssh host cmd`
   # with no pty, piped input): deploy-dashboard.sh is documented as safe
@@ -184,15 +194,23 @@ else
   log "ufw not active — skipping (nothing to open)"
 fi
 
-log "8/11 Installing the auto-updater (git pull + cert renewal every 2h)"
+log "8/11 Installing the auto-updater (git pull + cert renewal every 6h)"
 SYSTEMCTL_BIN="$(command -v systemctl)"
 SUDOERS_FILE="/etc/sudoers.d/${SERVICE_NAME}-updater"
 SUDOERS_TMP="$(mktemp)"
-echo "$USER ALL=(root) NOPASSWD: ${SYSTEMCTL_BIN} restart ${SERVICE_NAME}" > "$SUDOERS_TMP"
+# Two commands, both exact-match (no wildcards): restarting the app after
+# an update lands, and the admin panel's "Check for updates now" button
+# starting the updater service immediately instead of waiting for the
+# timer. app.py's admin_check_update_now() runs the second one verbatim —
+# keep both in sync if either changes.
+{
+  echo "$USER ALL=(root) NOPASSWD: ${SYSTEMCTL_BIN} restart ${SERVICE_NAME}"
+  echo "$USER ALL=(root) NOPASSWD: ${SYSTEMCTL_BIN} start ${SERVICE_NAME}-updater.service"
+} > "$SUDOERS_TMP"
 if sudo visudo -cf "$SUDOERS_TMP" >/dev/null 2>&1; then
   sudo install -m 440 -o root -g root "$SUDOERS_TMP" "$SUDOERS_FILE"
 else
-  warn "Generated sudoers rule failed validation — the auto-updater won't be able to restart the service on its own."
+  warn "Generated sudoers rule failed validation — the auto-updater won't be able to restart the service, and the admin panel's 'check now' button won't be able to trigger a check, automatically."
   warn "Restart it by hand after an update: sudo systemctl restart ${SERVICE_NAME}"
 fi
 rm -f "$SUDOERS_TMP"
@@ -216,7 +234,7 @@ Description=Run the Currency Dashboard auto-updater periodically
 
 [Timer]
 OnBootSec=5min
-OnUnitActiveSec=2h
+OnUnitActiveSec=6h
 Persistent=true
 
 [Install]
@@ -439,7 +457,7 @@ if [[ -f "$INSTALL_DIR/ssl/cert.pem" ]]; then
 else
   echo "Admin panel (HTTP, no cert yet): http://localhost:${APP_PORT}/admin"
 fi
-echo "Auto-updater:        sudo systemctl status ${SERVICE_NAME}-updater.timer  (runs every 2h; branch in scripts/auto-update.conf)"
+echo "Auto-updater:        sudo systemctl status ${SERVICE_NAME}-updater.timer  (runs every 6h if enabled in the admin panel; branch in scripts/auto-update.conf)"
 echo
 if is_headless; then
   echo "Headless mode — the service is already running, nothing more to do."
