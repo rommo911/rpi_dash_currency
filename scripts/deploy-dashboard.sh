@@ -266,10 +266,21 @@ done
 # appended directly rather than wrapped in a block) both only ever ADD to
 # these files, never rewrite them wholesale.
 configure_boot_files() {
-  local boot_dir=/boot/firmware
-  [[ -d "$boot_dir" ]] || boot_dir=/boot
+  local boot_dir
+  boot_dir="$(detect_boot_dir)"
   local config="$boot_dir/config.txt"
   local cmdline="$boot_dir/cmdline.txt"
+
+  if is_armbian; then
+    warn "Armbian/Orange Pi detected: Raspberry Pi /boot/config.txt and cmdline.txt are not assumed to be present or compatible."
+    warn "This image commonly uses Armbian boot configuration instead, and those flags are board-specific; no Pi-specific boot change is applied automatically here."
+    if [[ -f /boot/armbianEnv.txt || -f /boot/firmware/armbianEnv.txt ]]; then
+      warn "Found an Armbian boot environment file; review it manually if you need splash/console/blanking tweaks for this exact board."
+    else
+      warn "No Armbian boot environment file was found at /boot/armbianEnv.txt or /boot/firmware/armbianEnv.txt — boot tweaks remain OS-specific and are left alone."
+    fi
+    return 0
+  fi
 
   if [[ -f "$config" ]]; then
     ensure_block_in_file --sudo "$config" "currency-dashboard-boot" "$FILES_DIR/boot/config-txt-append.conf"
@@ -299,20 +310,26 @@ setup_labwc() {
   # xset-equivalent is needed here — configure_boot_files already covers
   # the console/firmware-level blanking that would otherwise apply.
   render_template_user "$FILES_DIR/kiosk/labwc-autostart" "$HOME/.config/labwc/autostart" "KIOSK_CMD=$KIOSK_CMD"
-  command -v raspi-config >/dev/null 2>&1 && sudo raspi-config nonint do_boot_behaviour B4 || true
+  if is_raspi_os && command -v raspi-config >/dev/null 2>&1; then
+    sudo raspi-config nonint do_boot_behaviour B4 || true
+  fi
   log "Configured labwc autostart (Raspberry Pi OS Bookworm / Wayland desktop)"
 }
 
 setup_wayfire() {
   ensure_block_in_file "$HOME/.config/wayfire.ini" "currency-dashboard-kiosk" \
     "$FILES_DIR/kiosk/wayfire-autostart.snippet" "KIOSK_CMD=$KIOSK_CMD"
-  command -v raspi-config >/dev/null 2>&1 && sudo raspi-config nonint do_boot_behaviour B4 || true
+  if is_raspi_os && command -v raspi-config >/dev/null 2>&1; then
+    sudo raspi-config nonint do_boot_behaviour B4 || true
+  fi
   log "Configured wayfire autostart"
 }
 
 setup_lxde() {
   render_template_user "$FILES_DIR/kiosk/lxde-autostart" "$HOME/.config/lxsession/LXDE-pi/autostart" "KIOSK_CMD=$KIOSK_CMD"
-  command -v raspi-config >/dev/null 2>&1 && sudo raspi-config nonint do_boot_behaviour B4 || true
+  if is_raspi_os && command -v raspi-config >/dev/null 2>&1; then
+    sudo raspi-config nonint do_boot_behaviour B4 || true
+  fi
   log "Configured LXDE autostart (older Raspberry Pi OS desktop)"
 }
 
@@ -350,19 +367,49 @@ setup_console_x() {
   # same shared, independently-tested mechanism disable-kiosk.sh's
   # --remove counterpart uses.
   ensure_block_in_file "$HOME/.bash_profile" "currency-dashboard-kiosk" "$FILES_DIR/kiosk/bash-profile.snippet"
-  command -v raspi-config >/dev/null 2>&1 && sudo raspi-config nonint do_boot_behaviour B2 || true
-  log "Configured console autologin + startx kiosk (Raspberry Pi OS Lite)"
+
+  if is_raspi_os && command -v raspi-config >/dev/null 2>&1; then
+    sudo raspi-config nonint do_boot_behaviour B2 || true
+    log "Configured console autologin + startx kiosk (Raspberry Pi OS Lite)"
+  else
+    warn "Armbian/Orange Pi detected: generic X11 kiosk setup was installed, but no raspi-config boot-behaviour hook was available."
+    warn "If your Armbian image does not auto-login or start X on tty1, configure a distro-native autologin method manually."
+    log "Configured generic X11 kiosk launch in ~/.bash_profile ~/.xinitrc"
+  fi
 }
 
-if command -v labwc >/dev/null 2>&1 || [[ -d /usr/share/labwc ]]; then
-  setup_labwc
-elif command -v wayfire >/dev/null 2>&1; then
-  setup_wayfire
-elif [[ -d /etc/xdg/lxsession/LXDE-pi ]] || command -v lxsession >/dev/null 2>&1; then
-  setup_lxde
-else
-  setup_console_x
-fi
+detect_desktop_environment() {
+  if command -v labwc >/dev/null 2>&1 || [[ -d /usr/share/labwc ]]; then
+    echo "labwc"
+  elif command -v wayfire >/dev/null 2>&1; then
+    echo "wayfire"
+  elif [[ -d /etc/xdg/lxsession/LXDE-pi ]] || command -v lxsession >/dev/null 2>&1; then
+    echo "lxde"
+  elif command -v startx >/dev/null 2>&1; then
+    echo "x11"
+  else
+    echo "unknown"
+  fi
+}
+
+case "$(detect_desktop_environment)" in
+  labwc)
+    setup_labwc
+    ;;
+  wayfire)
+    setup_wayfire
+    ;;
+  lxde)
+    setup_lxde
+    ;;
+  x11|unknown)
+    if is_armbian; then
+      warn "Armbian detected: no stable desktop session manager was found; falling back to the generic X11 launcher path."
+      warn "If your image does not auto-login to X or does not start X on tty1, configure that through the Armbian service manager or the board's native startup tooling."
+    fi
+    setup_console_x
+    ;;
+esac
 
 fi  # is_headless
 

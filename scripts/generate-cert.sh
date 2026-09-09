@@ -6,7 +6,7 @@
 #
 # Called once by deploy-dashboard.sh right after cloning (so HTTPS is up
 # from the very first boot), and every run of scripts/auto-update.sh
-# (roughly every 2 hours via the systemd timer) so renewal happens on its
+# (roughly every 6 hours via the systemd timer) so renewal happens on its
 # own without anyone noticing.
 #
 # Usage:

@@ -151,6 +151,20 @@ This installs the systemd service and also sets up kiosk autostart for
 whatever desktop the machine has — skip that part if you just want the
 service. It's meant for the Pi, but works on any Debian-based box.
 
+### Armbian / Orange Pi Zero 3 notes
+
+The scripts now auto-detect Armbian-based boards (including Orange Pi Zero 3)
+and avoid Raspberry Pi OS-specific setup commands such as `raspi-config` and
+Raspberry Pi boot-file tweaks when they are not applicable. The generic X11
+kiosk path still works on a headful Armbian install, but the OS's native
+startup/autologin method may still need to be configured manually if the image
+does not auto-launch X on tty1.
+
+The repo does not assume Armbian uses the same `/boot/config.txt` and
+`cmdline.txt` boot configuration as Raspberry Pi OS. On Armbian, those boot
+arguments are board- and image-specific; the script intentionally leaves them
+alone unless they are explicitly validated on the target system.
+
 ## 2. Deploying to a Raspberry Pi (fresh SD card → running)
 
 One script to start: `scripts/provision-pi.sh`. Flash Raspberry Pi OS, boot
@@ -433,12 +447,162 @@ works too, for auto-provisioning a headless board.
 **Note on the original Pi Zero W** (not Zero 2 W): it's an armv6 chip, which
 current Raspberry Pi OS (Bookworm) doesn't support. Flash **Raspberry Pi OS
 Lite (Legacy, Bullseye, 32-bit)** for it instead — that image also uses
-`dhcpcd`/`wpa_supplicant` rather than NetworkManager, so the Wi-Fi step in
+dhcpcd/wpa_supplicant rather than NetworkManager, so the Wi‑Fi step in
 `provision-pi.sh` (which uses `nmcli`) will warn and skip; connect it to
-Wi-Fi via `raspi-config` or the Raspberry Pi Imager's OS customization
+Wi‑Fi via `raspi-config` or the Raspberry Pi Imager's OS customization
 option before/instead of that step. A Pi Zero 2 W (armv7, quad-core) runs
 current Raspberry Pi OS fine and isn't auto-treated as headless unless you
 set `HEADLESS=true`.
+
+## Orange Pi Zero 3 first-boot checklist (Armbian Debian 13 Minimal CLI)
+
+Use the official Armbian Debian 13 Minimal (CLI) image for Orange Pi Zero 3.
+This project does not assume Raspberry Pi OS defaults: the scripts now detect
+Armbian and skip Pi-only boot/file tweaks unless they are explicitly valid on
+that board.
+
+### 1) Flash and log in
+
+1. Download and flash the **Armbian Debian 13 Minimal (CLI)** image for
+   Orange Pi Zero 3 using the Armbian Imager or a standard image writer.
+2. Boot the board and log in as the default user (or use a user you created in
+   the first-boot wizard).
+3. If you are using a non-root user, confirm `sudo` works:
+
+```bash
+sudo whoami
+```
+
+### 2) Ensure networking
+
+Armbian images may use NetworkManager or distro-native networking tools. The
+repo scripts are written to work with NetworkManager when it is present, but
+they do not assume a Raspberry Pi OS Wi‑Fi flow.
+
+Check the adapter and Wi‑Fi state:
+
+```bash
+nmcli device status
+nmcli radio wifi
+```
+
+If Wi‑Fi is not configured yet, use one of these:
+
+- Ethernet: plug in a cable and test connectivity
+- Armbian network tools: `armbian-config` → Network
+- NetworkManager CLI: `sudo nmcli device wifi list`
+
+Test internet before continuing:
+
+```bash
+ping -c 1 8.8.8.8
+curl -I https://deb.debian.org
+```
+
+If no internet is available, fix networking first; the provisioning script will
+refuse to continue until it has working connectivity.
+
+### 3) Clone the repo and enter the project
+
+```bash
+cd ~
+git clone https://github.com/<you>/rpi_dash_currency.git
+cd rpi_dash_currency
+```
+
+Or, if you already have the repo copied onto the board, just `cd` into it.
+
+### 4) Set the admin password in the project-local env file
+
+The app uses a local `.env` file and does not rely on `config.py` anymore.
+The repo ships with `.env.example` as the tracked template:
+
+```bash
+cp .env.example .env
+chmod 600 .env
+```
+
+Edit `.env` and set a real password:
+
+```bash
+ADMIN_PASSWORD=your-strong-password
+```
+
+Do not leave the placeholder in place on a real deployment.
+
+### 5) Run the provisioning chain
+
+The recommended path is the standard three-stage chain:
+
+```bash
+bash ./scripts/provision-pi.sh --auto_default
+```
+
+This will:
+
+1. ensure internet is available
+2. clone or reuse the repo if needed
+3. hand off to `harden-system.sh`
+4. hand off to `deploy-dashboard.sh`
+
+If you want interactive prompts instead of defaults:
+
+```bash
+bash ./scripts/provision-pi.sh
+```
+
+### 6) Expected Armbian behavior
+
+On Orange Pi Zero 3 with Armbian, the scripts will not assume the following:
+
+- `raspi-config` exists or is the correct tool for system setup
+- `/boot/config.txt` / `cmdline.txt` are present or valid for this image
+- the Raspberry Pi OS boot behavior hooks are appropriate for this board
+- the image auto-logs into X11 or tty1 exactly as Raspberry Pi OS does
+
+If your Armbian image does not auto-start the display session, configure the
+board's native autologin/startup method manually using Armbian tools or the OS
+service manager. The repo intentionally warns instead of forcing a Pi-specific
+boot configuration onto Armbian.
+
+### 7) Reboot and check the dashboard
+
+After provisioning and deployment complete, reboot the board:
+
+```bash
+sudo reboot
+```
+
+Then check the app:
+
+```bash
+curl -I http://127.0.0.1:5000/
+```
+
+If the board is headless, access it on the LAN from another machine:
+
+```text
+http://<orange-pi-ip>:5000/
+https://<orange-pi-ip>:5443/admin
+```
+
+If a display is attached and the board is not in headless mode, the dashboard
+should appear in the kiosk/browser session once the board comes back up.
+
+### 8) If the kiosk does not start automatically
+
+On Armbian, some images need a distro-native autologin or session-start config.
+Check the following before changing the app:
+
+- `systemctl status` for the dashboard service
+- `journalctl -u currency-dashboard -n 100 --no-pager`
+- `ps aux | grep chromium`
+- whether X11 is launching on tty1 and whether `~/.xinitrc` / `~/.bash_profile`
+  actually reach `startx`
+
+If the image is not starting X automatically, configure that in the Armbian
+service/desktop layer rather than forcing Raspberry Pi OS-specific boot
+settings into the system.
 
 ## Notes
 

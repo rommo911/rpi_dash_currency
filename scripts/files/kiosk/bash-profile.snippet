@@ -1,3 +1,8 @@
 if [ -z "$DISPLAY" ] && [ "$(tty)" = "/dev/tty1" ]; then
+  # This is the generic X11 launcher used by Raspberry Pi OS Lite; it also
+  # works on many Armbian/Orange Pi images that start a tty1 X session.
+  # Some Armbian builds use different startup mechanisms, so this is kept as a
+  # fallback rather than a hard assumption that every Armbian image behaves the
+  # same way.
   startx -- -nocursor
 fi

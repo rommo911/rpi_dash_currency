@@ -82,6 +82,9 @@ connect_wifi_auto() {
   # regardless of whether it's reachable right now.
   if ! command -v nmcli >/dev/null 2>&1; then
     warn "nmcli (NetworkManager) not found — can't configure Wi-Fi automatically. Connect Ethernet instead."
+    if is_armbian; then
+      warn "Armbian/Orange Pi images commonly use NetworkManager; if nmcli is missing on your image, configure networking via armbian-config or the OS's normal network tool."
+    fi
     return 1
   fi
   sudo rfkill unblock wifi 2>/dev/null || true
@@ -106,7 +109,11 @@ connect_wifi_auto() {
 connect_wifi() {
   if ! command -v nmcli >/dev/null 2>&1; then
     warn "nmcli (NetworkManager) not found on this system — can't configure Wi-Fi from here."
-    warn "Connect Ethernet instead, or configure Wi-Fi with 'sudo raspi-config'."
+    if is_armbian; then
+      warn "Armbian/Orange Pi typically uses NetworkManager or armbian-config for Wi-Fi; connect via Ethernet or configure the OS's native networking tool first."
+    else
+      warn "Connect Ethernet instead, or configure Wi-Fi with 'sudo raspi-config'."
+    fi
     return 1
   fi
 
@@ -157,8 +164,12 @@ connect_wifi() {
   else
     warn "No networks found in the scan — you can still type a hidden network's SSID directly."
     warn "If that's not it either: the Wi-Fi country/region may not be set yet, which can block"
-    warn "scanning with no error. Try 'sudo raspi-config' -> Localisation Options -> WLAN Country,"
-    warn "then re-run this script."
+    if is_armbian; then
+      warn "scanning on Armbian/Orange Pi. Use armbian-config -> Network or set the regulatory domain in the OS before retrying."
+    else
+      warn "scanning with no error. Try 'sudo raspi-config' -> Localisation Options -> WLAN Country,"
+      warn "then re-run this script."
+    fi
     read -rp "SSID to connect to (leave blank to skip): " WIFI_INPUT
   fi
 
@@ -250,7 +261,11 @@ fi
 if ! check_internet; then
   echo
   echo "No internet connection available — apt and git both need one to continue."
-  echo "Connect Ethernet, or re-run this script to try Wi-Fi again (or configure it with 'sudo raspi-config'), then try again."
+  if is_armbian; then
+    echo "Connect Ethernet, or re-run this script to try Wi-Fi again (using the OS's network tool or nmcli), then try again."
+  else
+    echo "Connect Ethernet, or re-run this script to try Wi-Fi again (or configure it with 'sudo raspi-config'), then try again."
+  fi
   exit 1
 fi
 

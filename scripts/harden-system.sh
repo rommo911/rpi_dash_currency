@@ -77,20 +77,7 @@ sudo apt install -y ufw fail2ban unattended-upgrades curl git
 # ---------------------------------------------------------------------------
 log "4/11 Admin user"
 if is_auto; then
-  if id dashboard &>/dev/null; then
-    warn "User 'dashboard' already exists — skipping creation."
-  else
-    sudo adduser --gecos "" --disabled-password dashboard
-    sudo usermod -aG "$(id -Gn "$USER" | tr ' ' ',')" dashboard 2>/dev/null || true
-    sudo usermod -aG sudo dashboard
-    # Copy the current user's password hash directly — "no password
-    # change" per the auto-mode spec: nothing is prompted or invented,
-    # 'dashboard' just ends up logging in with the same password $USER
-    # already has. The original account is left fully untouched.
-    HASH="$(sudo getent shadow "$USER" | cut -d: -f2)"
-    sudo usermod -p "$HASH" dashboard
-    log "Created user 'dashboard' (password copied from '$USER')."
-  fi
+  log "Auto mode: keeping the current default user unchanged. No extra sudo user is created unless you explicitly ask for one later."
 else
   read -rp "Create a new sudo user? [y/N]: " DO_NEW_USER
   if [[ "${DO_NEW_USER,,}" == "y" ]]; then
@@ -112,13 +99,13 @@ else
         warn "'$CURRENT_USER' password login is now locked. Log in as '$NEW_USER' from now on."
       fi
     fi
+  fi
+
+  read -rp "Change the password for the current user ($(whoami))? [y/N]: " DO_PASSWD
+  if [[ "${DO_PASSWD,,}" == "y" ]]; then
+    passwd
   else
-    read -rp "Change the password for the current user ($(whoami))? [y/N]: " DO_PASSWD
-    if [[ "${DO_PASSWD,,}" == "y" ]]; then
-      passwd
-    else
-      log "Skipping user/password changes."
-    fi
+    log "Keeping the current user and leaving its password unchanged."
   fi
 fi
 
@@ -130,7 +117,7 @@ else
   read -rp "New hostname (leave blank to keep '$(hostname)'): " NEW_HOSTNAME
 fi
 if [[ -n "$NEW_HOSTNAME" ]]; then
-  if command -v raspi-config >/dev/null 2>&1; then
+  if is_raspi_os && command -v raspi-config >/dev/null 2>&1; then
     sudo raspi-config nonint do_hostname "$NEW_HOSTNAME"
   else
     sudo hostnamectl set-hostname "$NEW_HOSTNAME"

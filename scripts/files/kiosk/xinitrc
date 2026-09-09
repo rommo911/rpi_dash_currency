@@ -4,4 +4,8 @@ xset s noblank
 matchbox-window-manager -use_cursor no -use_titlebar no &
 sleep 1
 until curl -s http://localhost:{{APP_PORT}} >/dev/null; do sleep 1; done
+# X11 kiosk startup is intentionally kept in the foreground with exec.
+# This is compatible with both Raspberry Pi OS and Armbian/Orange Pi when
+# startx is launched from tty1, but Armbian images may require a distro-native
+# autologin method to reach this path automatically.
 exec {{KIOSK_CMD}}

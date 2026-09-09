@@ -43,6 +43,40 @@ ask() {
   printf -v "$__varname" '%s' "${reply:-$default}"
 }
 
+# OS detection helpers: Raspberry Pi OS and Armbian are close enough to
+# share the same Debian/NetworkManager flow, but some Raspberry Pi-specific
+# commands (raspi-config, /boot/firmware/config.txt, boot_behaviour changes)
+# are not present on Armbian. Keep the logic centralized here so the rest of
+# the scripts can simply ask "is this Raspberry Pi OS?" and behave safely
+# for Orange Pi/Armbian instead of making assumptions.
+detect_os_family() {
+  if [[ -f /etc/armbian-release ]] || [[ -f /etc/os-release ]] && grep -qiE 'armbian|orangepi|pine64|bananapi|rockchip' /etc/os-release 2>/dev/null; then
+    echo "armbian"
+  elif [[ -f /etc/os-release ]] && grep -qi 'raspbian' /etc/os-release 2>/dev/null; then
+    echo "raspbian"
+  elif [[ -f /etc/debian_version ]]; then
+    echo "debian"
+  else
+    echo "unknown"
+  fi
+}
+
+is_armbian() {
+  [[ "$(detect_os_family)" == "armbian" ]]
+}
+
+is_raspi_os() {
+  [[ "$(detect_os_family)" == "raspbian" ]] || command -v raspi-config >/dev/null 2>&1
+}
+
+detect_boot_dir() {
+  if [[ -d /boot/firmware ]]; then
+    echo "/boot/firmware"
+  else
+    echo "/boot"
+  fi
+}
+
 # render_template <template-file> <dest-path> [KEY=VALUE ...]
 # Replaces every {{KEY}} token in the template with its VALUE (plain bash
 # substring replacement — no sed, no external tools) and installs the
