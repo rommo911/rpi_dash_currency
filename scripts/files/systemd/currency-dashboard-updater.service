@@ -1,0 +1,10 @@
+[Unit]
+Description=Currency Dashboard auto-updater (git pull + cert renewal)
+
+[Service]
+Type=oneshot
+ExecStart=/bin/bash {{INSTALL_DIR}}/scripts/auto-update.sh
+WorkingDirectory={{INSTALL_DIR}}
+Environment=INSTALL_DIR={{INSTALL_DIR}}
+Environment=SERVICE_NAME={{SERVICE_NAME}}
+User={{RUN_USER}}

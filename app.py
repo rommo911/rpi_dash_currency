@@ -29,8 +29,6 @@ from flask import Flask, Response, jsonify, redirect, render_template_string, re
 from werkzeug.serving import make_server
 from werkzeug.utils import secure_filename
 
-import config
-
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
 DATA_FILE = os.path.join(APP_DIR, "data.json")
 FLAGS_DIR = os.path.join(APP_DIR, "static", "flags")
@@ -40,7 +38,7 @@ KEY_FILE = os.path.join(SSL_DIR, "key.pem")
 LOG_DIR = os.path.join(APP_DIR, "logs")
 LOG_FILE = os.path.join(LOG_DIR, "app.log")
 VERSION_FILE = os.path.join(APP_DIR, "VERSION")
-ALLOWED_FLAG_EXTS = {"png", "jpg", "jpeg", "webp", "svg"}
+ALLOWED_FLAG_EXTS = {"png", "jpg", "jpeg"}
 
 # Auto-update control: scripts/auto-update.sh (run every 6h by a systemd
 # timer) checks these two flag files before doing any git/network work.
@@ -83,6 +81,11 @@ APP_COMMIT = _read_git_commit()
 
 APP_PORT = int(os.environ.get("APP_PORT", "5000"))
 HTTPS_PORT = int(os.environ.get("HTTPS_PORT", "5443"))
+# The admin password must come from the process environment. The deployment
+# scripts load it from the project-local .env file before starting the app.
+ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "")
+if not ADMIN_PASSWORD:
+  raise RuntimeError("ADMIN_PASSWORD is not set; configure the project .env file before starting the app")
 # Best-effort default based on file presence; refined in __main__ once we've
 # actually confirmed the HTTPS listener can bind and load the cert.
 HTTPS_ENABLED = os.path.isfile(CERT_FILE) and os.path.isfile(KEY_FILE)
@@ -140,11 +143,11 @@ CSRF_SECRET = secrets.token_bytes(32)
 # السورية الجديدة" is ~24 characters, well under any of these caps).
 MAX_TITLE_LEN = 80
 MAX_SUBTITLE_LEN = 140
-MAX_NAME_LEN = 60
-MAX_SYMBOL_LEN = 6
-MAX_CODE_LEN = 8
-MAX_PRICE_RAW_LEN = 24
-MAX_PRICE_VALUE = 1_000_000_000_000  # 1e12 — comfortably above any real price, guards against typos/overflow
+MAX_NAME_LEN = 25
+MAX_SYMBOL_LEN = 3
+MAX_CODE_LEN = 5
+MAX_PRICE_RAW_LEN = 8
+MAX_PRICE_VALUE = 1_000_000  # 1e12 — comfortably above any real price, guards against typos/overflow
 
 # ISO-4217 currency code -> ISO-3166 country code, for currencies where the
 # "first two letters" heuristic doesn't hold. Extend as needed.
@@ -233,9 +236,9 @@ TRANSLATIONS = {
         "save_btn": "حفظ",
         "remove_btn": "حذف",
         "add_heading": "إضافة عملة",
-        "code_ph": "الرمز (مثال: GBP)",
-        "name_req_ph": "الاسم",
-        "symbol_opt_ph": "الرمز (اختياري)",
+        "code_ph": "الرمز (USD)",
+        "name_req_ph": "اسم العملة",
+        "symbol_opt_ph": " ($) محرف اختياري",
         "price_req_ph": "السعر",
         "flag_auto": "اقتراح العلم تلقائيًا حسب الرمز",
         "flag_upload": "رفع صورة",
@@ -503,7 +506,7 @@ def require_admin_auth():
     auth = request.authorization
     # hmac.compare_digest for a constant-time comparison — auth.password is
     # attacker-controlled input compared against a real secret.
-    if not auth or not hmac.compare_digest(auth.password or "", config.ADMIN_PASSWORD):
+    if not auth or not hmac.compare_digest(auth.password or "", ADMIN_PASSWORD):
         _record_admin_failure(ip)
         # fail2ban (see scripts/deploy-dashboard.sh) tails the journal for
         # this exact message to ban repeat offenders at the firewall level.
@@ -546,80 +549,141 @@ DASHBOARD_HTML = """
     --accent: #22d3ee;
   }
   * { box-sizing: border-box; }
+  html, body { height: 100%; }
   body {
     margin: 0;
-    min-height: 100vh;
-    display: flex;
-    align-items: center;
-    justify-content: center;
     font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
     background: radial-gradient(circle at 20% 20%, var(--bg-2), var(--bg-1) 60%);
     color: var(--text-main);
-    padding: 24px;
+    overflow: hidden;
   }
-  .wrap { width: 94vw; max-width: 2000px; min-width: 320px; }
-  .header { text-align: center; margin-bottom: 44px; }
+  /* Screen is inset 5% on every side from the viewport edges — that 5%
+     margin is the only space not used by the header or the price grid. */
+  .screen {
+    position: fixed;
+    top: 5vh; bottom: 5vh; left: 5vw; right: 5vw;
+    display: flex;
+    flex-direction: column;
+  }
+  /* Fixed 15% of the full screen height, regardless of how much text the
+     title/subtitle hold — long text shrinks via clamp() rather than
+     growing this band. */
+  .header {
+    flex: 0 0 10vh;
+    height: 10vh;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    text-align: center;
+    overflow: hidden;
+  }
   .header h1 {
-    font-size: clamp(2.2rem, 4.2vw, 3.4rem);
-    margin: 0 0 12px;
+    margin: 0;
     font-weight: 800;
     letter-spacing: -0.02em;
+    font-size: clamp(2rem, 6vh, 5rem);
+    line-height: 1.05;
   }
-  .header .sub { color: var(--text-dim); font-size: clamp(1.1rem, 1.6vw, 1.5rem); }
+  .header .sub {
+    color: var(--text-dim);
+    font-size: clamp(1.1rem, 2.5vh, 2.2rem);
+    margin-top: 0.6vh;
+    line-height: 1.1;
+  }
+  /* Everything left after the header fills with the price grid. */
+  #grid-wrap {
+    margin-top: 4vh;
+    margin-bottom: 2vh;
+    flex: 1 1 auto;
+    min-height: 0;
+    display: flex;
+  }
   .grid {
     display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
-    gap: 28px;
+    width: 100%;
+    height: 100%;
+    gap: 6vh 2vw;
   }
   .empty {
+    margin: auto;
     text-align: center;
     color: var(--text-dim);
-    font-size: 1.2rem;
-    padding: 60px 20px;
+    font-size: clamp(1.2rem, 3vh, 2rem);
+    padding: 5%;
     border: 1px dashed var(--card-border);
     border-radius: 24px;
   }
   .card {
     background: var(--card-bg);
-    border: 1px solid var(--card-border);
-    border-radius: 28px;
-    padding: 48px 32px;
-    backdrop-filter: blur(12px);
-    transition: transform 0.2s ease;
+    border: 4px solid var(--card-border);
+    border-radius: 1.9vh;
     text-align: center;
     display: flex;
     flex-direction: column;
     align-items: center;
     justify-content: center;
-    gap: 18px;
-    min-height: 38vh;
+    gap: var(--card-gap, 19px);
+    overflow: hidden;
+    padding: var(--card-pad, 19px);
+    min-width: 0;
+    min-height: 0;
   }
-  .card:hover { transform: translateY(-4px); }
   .icon-badge {
-    width: 140px;
-    height: 96px;
-    border-radius: 16px;
+    width: var(--icon-w, 90%);
+    height: var(--icon-h, auto);
+    aspect-ratio: 3 / 2;
+    border-radius: 12px;
     overflow: hidden;
     box-shadow: 0 8px 24px -8px rgba(0,0,0,0.5), 0 0 0 1px var(--card-border);
     background: rgba(255,255,255,0.05);
+    flex-shrink: 0;
   }
-  .icon-badge img { width: 100%; height: 100%; object-fit: cover; display: block; }
+  .icon-badge img { width: 100%; height: 100%; object-fit: fill; display: block; }
   .card .code {
-    font-size: 1.3rem;
+    font-size: var(--code-size, 1.8rem);
+    width: 50%;
     color: var(--text-main);
     letter-spacing: 0.1em;
     text-transform: uppercase;
-    font-weight: 700;
+    font-weight: 900;
+    line-height: 1;
   }
-  .card .name { font-size: 1.1rem; color: var(--text-dim); margin-top: -14px; }
+  .card .name {
+    font-size: var(--name-size, 1.6rem);
+    color: var(--text-dim);
+    line-height: 1.9;
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  /* The price itself is the biggest thing on a card — bigger than the
+     currency code, which is bigger than the currency name. */
   .card .value {
-    font-size: clamp(2rem, 3.4vw, 2.8rem);
-    font-weight: 800;
+    font-size: var(--value-size, 3rem);
+    width: 100%;
+    font-weight: 700;
     letter-spacing: -0.01em;
-    word-break: break-word;
     color: var(--accent);
+    line-height: 1;
+    max-width: 100%;
+    overflow: visible;
+    text-overflow: clip;
+    white-space: nowrap;
   }
-  .footer { margin-top: 36px; text-align: center; color: var(--text-dim); font-size: 1rem; }
+  /* Lives in the reserved bottom 5% margin rather than stealing height
+     from the price grid. */
+  .footer {
+    position: absolute;
+    top: 100%;
+    left: 0;
+    right: 0;
+    margin-top: 0.6vh;
+    text-align: center;
+    color: var(--text-dim);
+    font-size: clamp(0.8rem, 1.4vh, 1.1rem);
+  }
   .hostinfo {
     position: fixed;
     left: 16px;
@@ -637,7 +701,7 @@ DASHBOARD_HTML = """
 </style>
 </head>
 <body>
-<div class="wrap">
+<div class="screen">
   <div class="header">
     <h1 id="dash-title">{{ settings.title }}</h1>
     <div class="sub" id="dash-subtitle">{{ settings.subtitle }}</div>
@@ -650,7 +714,9 @@ DASHBOARD_HTML = """
 <div class="hostinfo" id="hostinfo"></div>
 
 <script>
+const MAX_DISPLAYED_CURRENCIES = 5;
 let lastUpdatedAt = null;
+let lastCount = 0;
 let lastHostInfo = { hostname: '', ip: '' };
 
 let hostInfoShown = false;
@@ -675,7 +741,7 @@ setTimeout(showHostInfo, 120000);
 
 function fmt(n) {
   if (n === null || n === undefined) return '—';
-  return Number(n).toLocaleString(undefined, {maximumFractionDigits: 3});
+  return Number(n).toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2});
 }
 
 function esc(s) {
@@ -712,9 +778,76 @@ function formatDateTime(dt) {
   return `${time} ${date}`;
 }
 
+// Picks the column/row split (out of every split that fits n cards) whose
+// resulting cell is the largest — so 2 cards fill the screen as two big
+// tiles, 3 as three, 7 as a balanced 4x2ish block, and so on, instead of
+// a fixed column count leaving unused space.
+function bestGridSplit(n, w, h, gapX, gapY) {
+  let best = null;
+  for (let cols = 1; cols <= n; cols++) {
+    const rows = Math.ceil(n / cols);
+    const cellW = (w - gapX * (cols - 1)) / cols;
+    const cellH = (h - gapY * (rows - 1)) / rows;
+    if (cellW <= 0 || cellH <= 0) continue;
+    const cellSize = Math.min(cellW, cellH);
+    if (!best || cellSize > best.cellSize) {
+      best = { cols, rows, cellSize };
+    }
+  }
+  return best || { cols: 1, rows: 1, cellSize: Math.min(w, h) };
+}
+
+function fitGrid() {
+  const gridWrap = document.getElementById('grid-wrap');
+  const grid = gridWrap.querySelector('.grid');
+  if (!grid || lastCount === 0) return;
+  const rect = gridWrap.getBoundingClientRect();
+  const gapX = window.innerWidth * 0.02;
+  const gapY = window.innerHeight * 0.02;
+  const { cols, rows, cellSize } = bestGridSplit(lastCount, rect.width, rect.height, gapX, gapY);
+  grid.style.gridTemplateColumns = `repeat(${cols}, 1fr)`;
+  grid.style.gridTemplateRows = `repeat(${rows}, 1fr)`;
+
+  // Budget the cell's actual pixels (padding + gaps first) instead of
+  // guessing fixed fractions of cellSize — that's what let the price
+  // digits get clipped once cells got bigger/smaller than expected.
+  const compactLayout = lastCount <= 2;
+  const cardPad = cellSize * (compactLayout ? 0.045 : 0.075);
+  const cardGap = cellSize * (compactLayout ? 0.025 : 0.055);
+  grid.style.setProperty('--card-pad', cardPad + 'px');
+  grid.style.setProperty('--card-gap', cardGap + 'px');
+
+  const available = Math.max(20, cellSize - cardPad * 2 - cardGap * 3);
+  // Price is the star of the card: bigger than the code, which is
+  // bigger than the currency name. Icon gets the single largest share
+  // since it's the most recognizable element from across a room.
+  const iconScale = 0.85;
+  const iconHeight = available * (compactLayout ? 0.36 : 0.30) * iconScale;
+  grid.style.setProperty('--icon-h', compactLayout ? iconHeight + 'px' : 'auto');
+  // For two cards, derive the image width from its capped height. This keeps
+  // the 3:2 image visible without allowing its width to consume the row.
+  grid.style.setProperty('--icon-w', compactLayout ? (iconHeight * 1.5) + 'px' : (95 * iconScale) + '%');
+  grid.style.setProperty('--code-size', (available * (compactLayout ? 0.12 : 0.22)) + 'px');
+  grid.style.setProperty('--name-size', (available * (compactLayout ? 0.075 : 0.14)) + 'px');
+  const valueSize = available * (compactLayout ? 0.22 : 0.38);
+  grid.style.setProperty('--value-size', valueSize + 'px');
+
+  // Keep every formatted price on one line without ellipsis. Longer values
+  // get a smaller font, while short values keep the largest possible size.
+  grid.querySelectorAll('.value').forEach(value => {
+    const textLength = Math.max(1, value.textContent.trim().length);
+    const width = value.getBoundingClientRect().width;
+    const fittedSize = width / textLength * 1.55;
+    value.style.fontSize = Math.min(valueSize, fittedSize) + 'px';
+  });
+}
+
 async function refresh() {
   try {
     const res = await fetch('/api/data');
+    if (!res.ok) {
+        throw new Error(`HTTP ${res.status}`);
+    }
     const d = await res.json();
 
     lastHostInfo = { hostname: d.hostname || '', ip: d.ip || '' };
@@ -728,12 +861,16 @@ async function refresh() {
     document.getElementById('dash-subtitle').textContent = d.subtitle || '';
 
     const wrap = document.getElementById('grid-wrap');
-    if (!d.currencies || d.currencies.length === 0) {
+    // The screen is sized for a handful of big tiles, not a scrolling
+    // list — cap what's shown even if more are enabled in the panel.
+    const shown = (d.currencies || []).slice(0, MAX_DISPLAYED_CURRENCIES);
+    lastCount = shown.length;
+    if (lastCount === 0) {
       wrap.innerHTML = '<div class="empty">No currencies enabled. Add or enable some from the control panel.</div>';
     } else {
       const grid = document.createElement('div');
       grid.className = 'grid';
-      d.currencies.forEach(c => {
+      shown.forEach(c => {
         const card = document.createElement('div');
         card.className = 'card';
         card.innerHTML = `
@@ -746,6 +883,7 @@ async function refresh() {
       });
       wrap.innerHTML = '';
       wrap.appendChild(grid);
+      fitGrid();
     }
 
     document.getElementById('footer').hidden = !d.show_updated_at;
@@ -760,8 +898,14 @@ async function refresh() {
   }
 }
 
+let resizeTimer = null;
+window.addEventListener('resize', () => {
+  clearTimeout(resizeTimer);
+  resizeTimer = setTimeout(fitGrid, 100);
+});
+
 refresh();
-setInterval(refresh, 3000);
+setInterval(refresh, 5000);
 </script>
 </body>
 </html>
@@ -844,8 +988,8 @@ ADMIN_HTML = """
     color: var(--text-main);
   }
   input[name=name] { width: 150px; }
-  input[name=symbol] { width: 60px; }
-  input[name=price] { width: 130px; }
+  input[name=symbol] { width: 150px; }
+  input[name=price] { width: 100px; }
   label.chk { display: flex; align-items: center; gap: 6px; font-size: 0.85rem; color: var(--text-dim); }
   button {
     padding: 9px 16px;
@@ -868,7 +1012,11 @@ ADMIN_HTML = """
   }
   .add-card h2 { font-size: 1.1rem; margin: 0 0 16px; }
   .add-card .fields { display: flex; flex-wrap: wrap; gap: 12px; margin-bottom: 14px; }
-  .add-card .fields input[name=code] { width: 90px; text-transform: uppercase; }
+  .add-card .fields input[name=code] {
+    width: 150px;
+    max-width: 100%;
+    text-transform: uppercase;
+  }
   .flag-choice { display: flex; gap: 18px; margin-bottom: 14px; font-size: 0.9rem; color: var(--text-dim); }
   .flag-choice label { display: flex; align-items: center; gap: 6px; }
   input[type=file] { color: var(--text-dim); font-size: 0.85rem; }

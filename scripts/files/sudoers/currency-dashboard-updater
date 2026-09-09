@@ -1,0 +1,2 @@
+{{RUN_USER}} ALL=(root) NOPASSWD: {{SYSTEMCTL_BIN}} restart {{SERVICE_NAME}}
+{{RUN_USER}} ALL=(root) NOPASSWD: {{SYSTEMCTL_BIN}} start {{SERVICE_NAME}}-updater.service

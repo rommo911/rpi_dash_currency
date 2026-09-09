@@ -1,0 +1,10 @@
+[Unit]
+Description=Run the Currency Dashboard auto-updater periodically
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=6h
+Persistent=true
+
+[Install]
+WantedBy=timers.target

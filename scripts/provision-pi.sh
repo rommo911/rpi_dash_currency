@@ -1,48 +1,57 @@
 #!/usr/bin/env bash
-# One script for a fresh Raspberry Pi OS install, start to finish: get
-# online, enable SSH, create the admin user, set the hostname, harden the
-# system (firewall, SSH, fail2ban, unattended-upgrades) — then
-# automatically install git, get this repo, and hand off to
-# deploy-dashboard.sh (venv + systemd service + kiosk autostart). By the
-# time it exits, the dashboard is installed and running.
-#
-# Network comes FIRST, before anything else, on purpose: apt and git both
-# need internet access, and a fresh Pi typically has neither Ethernet nor
-# Wi-Fi configured yet. Nothing that fetches packages runs until a working
-# connection is confirmed.
+# Stage 1 of 3: get this Pi online, then get the repo onto it. Nothing
+# else — user/hostname/firewall/hardening/kiosk setup all live in
+# harden-system.sh and deploy-dashboard.sh, which this script hands off
+# to once the repo is present. Kept minimal on purpose: this is the one
+# file you copy onto a fresh SD card before anything else exists there,
+# so it can't depend on any sibling file until it's cloned one.
 #
 # Works both ways:
-#   - Copied alone onto a fresh SD card (no repo present yet) — it clones
-#     this repo itself before handing off to deploy-dashboard.sh.
-#   - Run from inside an already-cloned copy of this repo (e.g. you cloned
-#     it on your PC and copied the whole thing over, or git-cloned it
-#     directly on the Pi) — it detects deploy-dashboard.sh sitting next to
-#     it and uses that checkout directly instead of cloning a second copy.
+#   - Copied alone onto a fresh SD card (no repo present yet) — clones
+#     this repo itself before handing off.
+#   - Run from inside an already-cloned copy of this repo — detects
+#     harden-system.sh sitting next to it and uses that checkout directly
+#     instead of cloning a second copy.
 #
 # Usage (right after first boot, logged in as the default user):
 #   scp scripts/provision-pi.sh pi@<pi-ip>:~
 #   ssh pi@<pi-ip>
 #   chmod +x provision-pi.sh
-#   ./provision-pi.sh
+#   ./provision-pi.sh                 # interactive
+#   ./provision-pi.sh --auto_default  # fully non-interactive, see README
 #
 # Optional env vars (all have sane defaults):
 #   REPO_URL     Git URL to clone (default: this project's GitHub repo) —
 #                only used when not already running from inside a clone
 #   INSTALL_DIR  Where to clone/install (default: ~/currency-dashboard) —
 #                only used when not already running from inside a clone
-#   APP_PORT     Dashboard port (default: 5000)
-#   HEADLESS     Set to "true" to skip Chromium/kiosk setup entirely
-#                (default: "false" — kiosk is always on unless you opt out)
 
 set -euo pipefail
 
+AUTO_DEFAULT=false
+for arg in "$@"; do
+  case "$arg" in
+    --auto_default) AUTO_DEFAULT=true ;;
+    *) echo "Unknown argument: $arg" >&2; exit 1 ;;
+  esac
+done
+export AUTO_DEFAULT
+
 REPO_URL="${REPO_URL:-https://github.com/rommo911/rpi_dash_currency.git}"
 INSTALL_DIR="${INSTALL_DIR:-$HOME/currency-dashboard}"
-APP_PORT="${APP_PORT:-5000}"
 HEADLESS="${HEADLESS:-false}"
 
-log()  { echo -e "\n\033[1;36m==> $*\033[0m"; }
-warn() { echo -e "\033[1;33m$*\033[0m"; }
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [[ -f "$SCRIPT_DIR/lib.sh" ]]; then
+  # shellcheck disable=SC1091
+  source "$SCRIPT_DIR/lib.sh"
+else
+  # Running copied-alone, before the repo (and lib.sh with it) exists on
+  # disk yet — fall back to bare versions of just what this stage needs.
+  log()  { echo -e "\n\033[1;36m==> $*\033[0m"; }
+  warn() { echo -e "\033[1;33m$*\033[0m"; }
+  is_auto() { [[ "$AUTO_DEFAULT" == "true" ]]; }
+fi
 
 if [[ $EUID -eq 0 ]]; then
   echo "Run this as your normal sudo user (e.g. 'pi'), not as root — it calls sudo where needed."
@@ -50,10 +59,9 @@ if [[ $EUID -eq 0 ]]; then
 fi
 
 # Detect whether we're already sitting inside a clone of this repo (has a
-# sibling deploy-dashboard.sh) so the final step can skip re-cloning.
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# sibling harden-system.sh) so the final step can skip re-cloning.
 RUNNING_FROM_CLONE=false
-if [[ -f "$SCRIPT_DIR/deploy-dashboard.sh" ]]; then
+if [[ -f "$SCRIPT_DIR/harden-system.sh" ]]; then
   RUNNING_FROM_CLONE=true
   REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 fi
@@ -63,6 +71,36 @@ check_internet() {
   ping -c 1 -W 3 8.8.8.8 &>/dev/null && return 0
   curl -fsS --max-time 5 https://deb.debian.org >/dev/null 2>&1 && return 0
   return 1
+}
+
+connect_wifi_auto() {
+  # Non-interactive path for --auto_default: create (or refresh) a saved
+  # profile for SSID "dashboard" / password "123456789" and try to bring
+  # it up. Saving the profile always succeeds even if that SSID isn't in
+  # range yet — NetworkManager will connect to it the moment it is, and
+  # harden-system.sh's AP-fallback step builds on this same saved profile
+  # regardless of whether it's reachable right now.
+  if ! command -v nmcli >/dev/null 2>&1; then
+    warn "nmcli (NetworkManager) not found — can't configure Wi-Fi automatically. Connect Ethernet instead."
+    return 1
+  fi
+  sudo rfkill unblock wifi 2>/dev/null || true
+  sudo nmcli radio wifi on 2>/dev/null || true
+
+  local wifi_dev
+  wifi_dev="$(nmcli -t -f DEVICE,TYPE device status | awk -F: '$2=="wifi"{print $1; exit}')" || true
+  if [[ -z "$wifi_dev" ]]; then
+    warn "No Wi-Fi device detected — relying on Ethernet."
+    return 1
+  fi
+
+  log "Configuring default Wi-Fi profile 'dashboard' (auto mode)"
+  sudo nmcli connection delete dashboard >/dev/null 2>&1 || true
+  sudo nmcli connection add \
+    type wifi ifname "$wifi_dev" con-name dashboard ssid dashboard autoconnect yes \
+    wifi-sec.key-mgmt wpa-psk wifi-sec.psk 123456789
+  sudo nmcli connection up dashboard >/dev/null 2>&1 || \
+    warn "Could not connect to 'dashboard' right now — profile is saved, will connect automatically once that SSID is in range."
 }
 
 connect_wifi() {
@@ -178,27 +216,35 @@ connect_wifi() {
   fi
 }
 
-log "1/15 Network connectivity — apt and git both need this before anything else can run"
+log "1/2 Network connectivity — apt and git both need this before anything else can run"
 WIFI_IP=""
-if check_internet; then
-  log "Internet already reachable (Ethernet, or Wi-Fi already configured)."
-  read -rp "Reconfigure Wi-Fi anyway? [y/N]: " RECONFIGURE_WIFI
+if is_auto; then
+  if check_internet; then
+    log "Internet already reachable (Ethernet, or Wi-Fi already configured)."
+  else
+    connect_wifi_auto || true
+  fi
 else
-  warn "No internet connection detected yet — nothing can be installed until one is available."
-  RECONFIGURE_WIFI="y"
-fi
+  if check_internet; then
+    log "Internet already reachable (Ethernet, or Wi-Fi already configured)."
+    read -rp "Reconfigure Wi-Fi anyway? [y/N]: " RECONFIGURE_WIFI
+  else
+    warn "No internet connection detected yet — nothing can be installed until one is available."
+    RECONFIGURE_WIFI="y"
+  fi
 
-if [[ "${RECONFIGURE_WIFI,,}" == "y" ]]; then
-  while true; do
-    connect_wifi || true
-    if check_internet; then
-      echo "Internet connectivity verified."
-      break
-    fi
-    warn "Still no internet connection."
-    read -rp "Try Wi-Fi setup again? [Y/n]: " RETRY
-    [[ "${RETRY,,}" == "n" ]] && break
-  done
+  if [[ "${RECONFIGURE_WIFI,,}" == "y" ]]; then
+    while true; do
+      connect_wifi || true
+      if check_internet; then
+        echo "Internet connectivity verified."
+        break
+      fi
+      warn "Still no internet connection."
+      read -rp "Try Wi-Fi setup again? [Y/n]: " RETRY
+      [[ "${RETRY,,}" == "n" ]] && break
+    done
+  fi
 fi
 
 if ! check_internet; then
@@ -209,204 +255,13 @@ if ! check_internet; then
 fi
 
 # ---------------------------------------------------------------------------
-log "2/15 Enabling SSH"
-sudo systemctl enable --now ssh 2>/dev/null || sudo systemctl enable --now sshd 2>/dev/null || \
-  warn "Could not find an ssh/sshd service to enable — SSH may already be active, or install openssh-server."
-
-# ---------------------------------------------------------------------------
-log "3/15 Removing unneeded pre-installed packages"
-# Only relevant on Raspberry Pi OS "Desktop"/"Full" images, which bundle a
-# bunch of apps a dedicated kiosk display never uses. Each is checked with
-# dpkg -s first, so this is a no-op on Lite (none of these are installed
-# there) and never errors on a package name that isn't present.
-BLOAT_PACKAGES=(
-  rpi-connect rpi-connect-lite
-  wolfram-engine wolframscript
-  scratch scratch2 scratch3
-  minecraft-pi
-  sonic-pi
-  thonny
-  nodered
-  smartsim
-  claws-mail
-)
-read -rp "Remove unneeded pre-installed apps (Raspberry Pi Connect, LibreOffice, Wolfram, Scratch, Minecraft, Sonic Pi, Thonny, Node-RED, Claws Mail — whichever are actually present) to save space/resources on this dedicated kiosk? [Y/n]: " DO_CLEANUP
-if [[ "${DO_CLEANUP,,}" != "n" ]]; then
-  TO_REMOVE=()
-  for pkg in "${BLOAT_PACKAGES[@]}"; do
-    dpkg -s "$pkg" &>/dev/null && TO_REMOVE+=("$pkg")
-  done
-  dpkg -l 'libreoffice*' 2>/dev/null | grep -q '^ii' && TO_REMOVE+=("libreoffice*")
-  if [[ "${#TO_REMOVE[@]}" -gt 0 ]]; then
-    log "Removing: ${TO_REMOVE[*]}"
-    sudo apt purge -y "${TO_REMOVE[@]}"
-    sudo apt autoremove -y
-  else
-    log "None of the known bloat packages are installed — nothing to remove."
-  fi
-else
-  log "Skipping cleanup."
-fi
-
-log "4/15 Updating system packages (this can take a while on first boot)"
-sudo apt update
-sudo apt full-upgrade -y
-sudo apt autoremove -y
-
-log "5/15 Installing security tooling"
-sudo apt install -y ufw fail2ban unattended-upgrades curl git
-
-# ---------------------------------------------------------------------------
-log "6/15 Admin user (optional)"
-read -rp "Create a new sudo user? [y/N]: " DO_NEW_USER
-if [[ "${DO_NEW_USER,,}" == "y" ]]; then
-  read -rp "New username: " NEW_USER
-  if [[ -z "$NEW_USER" ]]; then
-    warn "No username entered — skipping user creation."
-  elif id "$NEW_USER" &>/dev/null; then
-    warn "User '$NEW_USER' already exists — skipping creation."
-  else
-    sudo adduser --gecos "" "$NEW_USER"
-    sudo usermod -aG "$(id -Gn "$USER" | tr ' ' ',')" "$NEW_USER" 2>/dev/null || true
-    sudo usermod -aG sudo "$NEW_USER"
-  fi
-  CURRENT_USER="$(whoami)"
-  if [[ -n "$NEW_USER" && "$CURRENT_USER" != "$NEW_USER" ]]; then
-    read -rp "Lock login for current user '$CURRENT_USER'? Only do this once you've confirmed '$NEW_USER' can log in and sudo. [y/N]: " LOCK_OLD
-    if [[ "${LOCK_OLD,,}" == "y" ]]; then
-      sudo passwd -l "$CURRENT_USER"
-      warn "'$CURRENT_USER' password login is now locked. Log in as '$NEW_USER' from now on."
-    fi
-  fi
-else
-  read -rp "Change the password for the current user ($(whoami))? [y/N]: " DO_PASSWD
-  if [[ "${DO_PASSWD,,}" == "y" ]]; then
-    passwd
-  else
-    log "Skipping user/password changes."
-  fi
-fi
-
-# ---------------------------------------------------------------------------
-log "7/15 Hostname"
-read -rp "New hostname (leave blank to keep '$(hostname)'): " NEW_HOSTNAME
-if [[ -n "$NEW_HOSTNAME" ]]; then
-  if command -v raspi-config >/dev/null 2>&1; then
-    sudo raspi-config nonint do_hostname "$NEW_HOSTNAME"
-  else
-    sudo hostnamectl set-hostname "$NEW_HOSTNAME"
-  fi
-  log "Hostname set to $NEW_HOSTNAME (takes effect after reboot)"
-fi
-FINAL_HOSTNAME="${NEW_HOSTNAME:-$(hostname)}"
-
-# ---------------------------------------------------------------------------
-log "8/15 Timezone and NTP"
-sudo timedatectl set-timezone Asia/Damascus
-# set-ntp true both syncs now (via systemd-timesyncd) and persists as an
-# enabled system setting — timesyncd starts automatically on every future
-# boot too, this isn't a one-shot sync.
-sudo timedatectl set-ntp true
-timedatectl status | grep -E 'Time zone|NTP service|System clock synchronized' || true
-
-# ---------------------------------------------------------------------------
-log "9/15 Firewall (ufw)"
-read -rp "Dashboard port to allow through the firewall [${APP_PORT}]: " APP_PORT_INPUT
-APP_PORT="${APP_PORT_INPUT:-$APP_PORT}"
-read -rp "Restrict dashboard/SSH access to a LAN subnet (e.g. 192.168.1.0/24)? Leave blank to allow from anywhere: " LAN_SUBNET
-
-sudo ufw default deny incoming
-sudo ufw default allow outgoing
-
-if [[ -n "$LAN_SUBNET" ]]; then
-  sudo ufw allow from "$LAN_SUBNET" to any port 22 proto tcp
-  sudo ufw allow from "$LAN_SUBNET" to any port "$APP_PORT" proto tcp
-else
-  sudo ufw allow OpenSSH
-  sudo ufw allow "$APP_PORT"/tcp
-fi
-sudo ufw --force enable
-
-# ---------------------------------------------------------------------------
-log "10/15 Hardening SSH (root login disabled; password auth kept ON as requested)"
-SSHD_CONFIG=/etc/ssh/sshd_config
-sudo cp "$SSHD_CONFIG" "${SSHD_CONFIG}.bak.$(date +%s)"
-sudo sed -i \
-  -e 's/^#\?PermitRootLogin.*/PermitRootLogin no/' \
-  -e 's/^#\?PasswordAuthentication.*/PasswordAuthentication yes/' \
-  -e 's/^#\?MaxAuthTries.*/MaxAuthTries 4/' \
-  -e 's/^#\?LoginGraceTime.*/LoginGraceTime 30/' \
-  "$SSHD_CONFIG"
-sudo systemctl restart ssh 2>/dev/null || sudo systemctl restart sshd
-
-# ---------------------------------------------------------------------------
-log "11/15 fail2ban for SSH"
-sudo tee /etc/fail2ban/jail.local > /dev/null <<'EOF'
-[DEFAULT]
-bantime  = 1h
-findtime = 10m
-maxretry = 5
-
-[sshd]
-enabled  = true
-port     = ssh
-filter   = sshd
-backend  = systemd
-EOF
-sudo systemctl enable --now fail2ban
-sudo systemctl restart fail2ban
-
-# ---------------------------------------------------------------------------
-log "12/15 Automatic security updates"
-echo 'Unattended-Upgrade::Origins-Pattern {
-        "origin=Debian,codename=${distro_codename},label=Debian-Security";
-        "origin=Raspbian,codename=${distro_codename},label=Raspbian";
-        "origin=Raspberry Pi Foundation,codename=${distro_codename},label=Raspberry Pi Foundation";
-};' | sudo tee /etc/apt/apt.conf.d/51unattended-upgrades-security > /dev/null
-echo 'APT::Periodic::Update-Package-Lists "1";
-APT::Periodic::Unattended-Upgrade "1";' | sudo tee /etc/apt/apt.conf.d/20auto-upgrades > /dev/null
-sudo systemctl enable --now unattended-upgrades
-
-# ---------------------------------------------------------------------------
-log "13/15 System-wide log limits (errors only, 1 week max)"
-# journald's own MaxLevelStore is what "errors only" actually means at the
-# system level: messages below the given level still reach live watchers
-# (journalctl -f, fail2ban's follow-mode) but are never written to disk —
-# so this cuts disk usage from routine info/debug noise without starving
-# anything that depends on real-time log-following. The dashboard's own
-# security-relevant log line is deliberately emitted at ERROR (see
-# app.py/CLAUDE.md) specifically so it still gets *stored* under this
-# policy and the admin-login fail2ban jail keeps working.
-# A drop-in under journald.conf.d/, not a raw edit of journald.conf, so
-# this stays isolated from distro defaults and is safe to re-run.
-sudo mkdir -p /etc/systemd/journald.conf.d
-sudo tee /etc/systemd/journald.conf.d/10-currency-dashboard-limits.conf > /dev/null <<'EOF'
-[Journal]
-Storage=persistent
-Compress=yes
-MaxLevelStore=err
-MaxRetentionSec=1week
-SystemMaxUse=200M
-EOF
-sudo systemctl restart systemd-journald
-
-# ---------------------------------------------------------------------------
-log "14/15 Provisioning summary"
-sudo ufw status verbose
-echo
-sudo fail2ban-client status sshd || true
-echo
-if [[ -n "$WIFI_IP" ]]; then
-  echo "Wi-Fi IP address: $WIFI_IP"
-fi
-
-# ---------------------------------------------------------------------------
-log "15/15 Installing the dashboard (git clone + deploy-dashboard.sh)"
+log "2/2 Getting the dashboard repo onto this Pi"
 # Untrack data.json/config.py first if this checkout predates them being
 # gitignored — a plain `git pull`/reset would otherwise refuse or (worse,
 # for reset --hard) silently delete a live-modified copy of either file.
-# See scripts/auto-update.sh for the full explanation; deploy-dashboard.sh
-# repeats this same update below anyway, so failures here are non-fatal.
+# See scripts/auto-update.sh for the full explanation; harden-system.sh's
+# handoff to deploy-dashboard.sh repeats this same update anyway, so
+# failures here are non-fatal.
 if [[ "$RUNNING_FROM_CLONE" == true ]]; then
   log "Already running from a clone at $REPO_ROOT — using it directly"
   git -C "$REPO_ROOT" rm --cached -q data.json config.py 2>/dev/null || true
@@ -418,27 +273,20 @@ elif [[ -d "$INSTALL_DIR/.git" ]]; then
   git -C "$INSTALL_DIR" pull || warn "git pull failed — continuing with the code already on disk"
 else
   log "Cloning $REPO_URL into $INSTALL_DIR"
+  sudo apt update && sudo apt install -y git
   git clone "$REPO_URL" "$INSTALL_DIR"
 fi
 
-if [[ ! -f "$INSTALL_DIR/scripts/deploy-dashboard.sh" ]]; then
-  warn "scripts/deploy-dashboard.sh not found in $INSTALL_DIR — cannot continue automatically."
+if [[ ! -f "$INSTALL_DIR/scripts/harden-system.sh" ]]; then
+  warn "scripts/harden-system.sh not found in $INSTALL_DIR — cannot continue automatically."
   warn "Check REPO_URL ($REPO_URL) and run it manually once it's available."
   exit 1
 fi
 
-# ---------------------------------------------------------------------------
-log "Optional: emergency Wi-Fi AP fallback"
-read -rp "If this Pi ever loses its Wi-Fi connection, have it broadcast its own emergency Wi-Fi network so you can still reach it? [y/N]: " DO_AP_FALLBACK
-if [[ "${DO_AP_FALLBACK,,}" == "y" ]]; then
-  if [[ -f "$INSTALL_DIR/scripts/wifi-ap-fallback.sh" ]]; then
-    WIFI_CONNECTION="${WIFI_SSID:-}" bash "$INSTALL_DIR/scripts/wifi-ap-fallback.sh" || \
-      warn "AP fallback setup failed — you can re-run scripts/wifi-ap-fallback.sh manually later."
-  else
-    warn "scripts/wifi-ap-fallback.sh not found in $INSTALL_DIR — skipping."
-  fi
+if [[ -n "$WIFI_IP" ]]; then
+  echo "Wi-Fi IP address: $WIFI_IP"
 fi
 
-echo "Handing off to deploy-dashboard.sh ..."
-exec env REPO_URL="$REPO_URL" INSTALL_DIR="$INSTALL_DIR" APP_PORT="$APP_PORT" HEADLESS="$HEADLESS" LAN_SUBNET="${LAN_SUBNET:-}" \
-  bash "$INSTALL_DIR/scripts/deploy-dashboard.sh"
+echo "Handing off to harden-system.sh ..."
+exec env AUTO_DEFAULT="$AUTO_DEFAULT" INSTALL_DIR="$INSTALL_DIR" WIFI_SSID="${WIFI_SSID:-}" HEADLESS="$HEADLESS" \
+  bash "$INSTALL_DIR/scripts/harden-system.sh"

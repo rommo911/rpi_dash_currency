@@ -9,11 +9,16 @@
 # intervention either direction.
 #
 # Assumes a Wi-Fi client connection already exists in NetworkManager
-# (provision-pi.sh's network step sets one up, or use 'nmcli device wifi
-# connect' / raspi-config yourself) — this script only layers the AP
-# fallback on top of it, it doesn't configure normal Wi-Fi itself. Safe to
-# re-run any time (from provision-pi.sh, or standalone later) to change
-# the AP SSID/password or refresh the watchdog service.
+# (harden-system.sh's optional step, provision-pi.sh's/harden-system.sh's
+# --auto_default Wi-Fi setup, or 'nmcli device wifi connect'/raspi-config
+# by hand) — this script only layers the AP fallback on top of it, it
+# doesn't configure normal Wi-Fi itself. Safe to re-run any time to
+# change the AP SSID/password or refresh the watchdog service.
+#
+# The watchdog daemon itself and its systemd unit are real files under
+# scripts/files/network/ and scripts/files/systemd/ — this script only
+# renders and installs them (see scripts/lib.sh), it doesn't author their
+# content inline.
 #
 # Usage:
 #   ./wifi-ap-fallback.sh
@@ -26,8 +31,10 @@
 
 set -euo pipefail
 
-log()  { echo -e "\n\033[1;36m==> $*\033[0m"; }
-warn() { echo -e "\033[1;33m$*\033[0m"; }
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+FILES_DIR="$SCRIPT_DIR/files"
+# shellcheck disable=SC1091
+source "$SCRIPT_DIR/lib.sh"
 
 AP_CONN_NAME="Emergency-AP"
 AP_IP="192.168.50.1/24"
@@ -70,7 +77,7 @@ pick_primary_connection() {
   done < <(nmcli -t -f NAME,TYPE connection show)
 
   if [[ "${#conns[@]}" -eq 0 ]]; then
-    warn "No saved Wi-Fi connections found. Connect to Wi-Fi first (provision-pi.sh's network step, 'nmcli device wifi connect ...', or raspi-config), then re-run this script."
+    warn "No saved Wi-Fi connections found. Connect to Wi-Fi first (harden-system.sh's network step, 'nmcli device wifi connect ...', or raspi-config), then re-run this script."
     exit 1
   fi
 
@@ -145,101 +152,19 @@ WIFI_TIMEOUT=$(printf '%q' "$WIFI_TIMEOUT")
 CHECK_INTERVAL=$(printf '%q' "$CHECK_INTERVAL")
 EOF
 sudo chmod 600 "$CONFIG_FILE"
+# This one config file is genuinely install-time-computed data (which
+# device/connection this Pi chose), not static template content, so it's
+# the one exception to going through render_template — matches
+# generate-cert.sh's cert.meta for the same reason.
 
 # ---------------------------------------------------------------------------
 log "Installing the watchdog"
-# The watchdog is deliberately NOT `set -e`: it runs forever in a loop, and
-# a single failed nmcli call (a transient DBus hiccup, a network blip)
-# should be logged and retried on the next tick, not kill the daemon.
-sudo tee "$WATCHDOG" >/dev/null <<'WDEOF'
-#!/bin/bash
-set -u
-
-CONFIG="/etc/wifi-ap-fallback/config"
-if [[ ! -f "$CONFIG" ]]; then
-  echo "Missing $CONFIG"
-  exit 1
-fi
-# shellcheck disable=SC1090
-source "$CONFIG"
-
-log() { logger -t wifi-ap-fallback "$1"; echo "$1"; }
-
-wifi_connected() {
-  local state
-  state="$(nmcli -t -f GENERAL.STATE device show "$WIFI_DEV" 2>/dev/null | cut -d: -f1)"
-  [[ "$state" == "100" ]]
-}
-
-ap_active() {
-  nmcli -t -f NAME connection show --active 2>/dev/null | grep -Fxq "$AP_CONN_NAME"
-}
-
-stop_ap() {
-  if ap_active; then
-    log "Normal Wi-Fi is up — stopping emergency AP."
-    nmcli connection down "$AP_CONN_NAME" >/dev/null 2>&1 || true
-  fi
-}
-
-start_ap() {
-  if ap_active; then
-    return
-  fi
-  log "Wi-Fi unavailable — starting emergency AP ($AP_CONN_NAME)."
-  nmcli device disconnect "$WIFI_DEV" >/dev/null 2>&1 || true
-  sleep 2
-  nmcli connection up "$AP_CONN_NAME" >/dev/null 2>&1 || log "ERROR: failed to start $AP_CONN_NAME"
-}
-
-try_reconnect() {
-  log "Trying primary Wi-Fi: $PRIMARY_CONN"
-  stop_ap
-  sleep 2
-  nmcli radio wifi on >/dev/null 2>&1 || true
-  nmcli connection up "$PRIMARY_CONN" >/dev/null 2>&1 || true
-  for ((i = 0; i < WIFI_TIMEOUT; i++)); do
-    if wifi_connected; then
-      log "Wi-Fi connected: $PRIMARY_CONN"
-      return 0
-    fi
-    sleep 1
-  done
-  log "Wi-Fi connection attempt failed."
-  return 1
-}
-
-log "wifi-ap-fallback watchdog started (primary=$PRIMARY_CONN ap=$AP_CONN_NAME)"
-nmcli radio wifi on >/dev/null 2>&1 || true
-
-while true; do
-  if wifi_connected; then
-    stop_ap
-  else
-    try_reconnect || start_ap
-  fi
-  sleep "$CHECK_INTERVAL"
-done
-WDEOF
+render_template "$FILES_DIR/network/wifi-ap-fallback-watchdog.sh" "$WATCHDOG"
 sudo chmod 755 "$WATCHDOG"
 
 # ---------------------------------------------------------------------------
 log "Installing the systemd service"
-sudo tee "$SERVICE_FILE" >/dev/null <<EOF
-[Unit]
-Description=Wi-Fi Emergency AP Fallback
-After=NetworkManager.service
-Wants=NetworkManager.service
-
-[Service]
-Type=simple
-ExecStart=$WATCHDOG
-Restart=always
-RestartSec=5
-
-[Install]
-WantedBy=multi-user.target
-EOF
+render_template "$FILES_DIR/systemd/wifi-ap-fallback.service" "$SERVICE_FILE" "WATCHDOG_PATH=$WATCHDOG"
 
 sudo systemctl daemon-reload
 sudo systemctl enable wifi-ap-fallback

@@ -1,0 +1,3 @@
+[Definition]
+failregex = ^.*Failed admin login from <HOST>\s*$
+ignoreregex =

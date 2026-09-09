@@ -1,0 +1,9 @@
+[{{SERVICE_NAME}}]
+enabled      = true
+port         = {{APP_PORT}},{{HTTPS_PORT}}
+filter       = {{SERVICE_NAME}}
+backend      = systemd
+journalmatch = _SYSTEMD_UNIT={{SERVICE_NAME}}.service
+bantime      = 1h
+findtime     = 10m
+maxretry     = 6

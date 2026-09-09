@@ -1,0 +1,13 @@
+[Unit]
+Description=Wi-Fi Emergency AP Fallback
+After=NetworkManager.service
+Wants=NetworkManager.service
+
+[Service]
+Type=simple
+ExecStart={{WATCHDOG_PATH}}
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

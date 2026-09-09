@@ -24,8 +24,8 @@ META_FILE="$SSL_DIR/cert.meta"
 RENEW_BEFORE_DAYS="${RENEW_BEFORE_DAYS:-30}"
 VALIDITY_DAYS="${VALIDITY_DAYS:-397}"
 
-log()  { echo -e "\033[1;36m==>\033[0m $*"; }
-warn() { echo -e "\033[1;33m$*\033[0m"; }
+# shellcheck disable=SC1091
+source "$SCRIPT_DIR/lib.sh"
 
 if ! command -v openssl >/dev/null 2>&1; then
   echo "openssl not found — install it (apt install openssl) to enable HTTPS for the admin panel." >&2

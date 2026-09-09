@@ -41,10 +41,16 @@ if not exist "data.json" (
     copy /y "data.default.json" "data.json" >nul
 )
 
-if not exist "config.py" (
-    echo Creating config.py from config.py.example ...
-    copy /y "config.py.example" "config.py" >nul
-    echo NOTE: config.py has the placeholder admin password - change ADMIN_PASSWORD in config.py before relying on it.
+if not exist ".env" (
+    echo Creating .env from .env.example ...
+    copy /y ".env.example" ".env" >nul
+)
+
+for /f "usebackq tokens=1,* delims==" %%A in (".env") do (
+    if /i "%%A"=="ADMIN_PASSWORD" set "ADMIN_PASSWORD=%%B"
+)
+if not defined ADMIN_PASSWORD (
+    echo NOTE: Set ADMIN_PASSWORD in .env before using the admin panel.
 )
 
 echo.

@@ -36,8 +36,8 @@ INSTALL_DIR="${INSTALL_DIR:-$(cd "$SCRIPT_DIR/.." && pwd)}"
 SERVICE_NAME="${SERVICE_NAME:-currency-dashboard}"
 CONFIG_FILE="$INSTALL_DIR/scripts/auto-update.conf"
 
-log()  { echo -e "\033[1;36m==>\033[0m $*"; }
-warn() { echo -e "\033[1;33m$*\033[0m"; }
+# shellcheck disable=SC1091
+source "$SCRIPT_DIR/lib.sh"
 
 BRANCH="main"
 if [[ -f "$CONFIG_FILE" ]]; then

@@ -19,10 +19,11 @@ set -uo pipefail
 # Each step reports what it did; nothing here is destructive if it's a
 # no-op because that piece was already stopped/disabled.
 
-SERVICE_NAME="${SERVICE_NAME:-currency-dashboard}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck disable=SC1091
+source "$SCRIPT_DIR/lib.sh"
 
-log()  { echo -e "\n\033[1;36m==> $*\033[0m"; }
-warn() { echo -e "\033[1;33m$*\033[0m"; }
+SERVICE_NAME="${SERVICE_NAME:-currency-dashboard}"
 
 if [[ $EUID -eq 0 ]]; then
   echo "Run this as your normal user (e.g. 'dashboard'), not as root — it calls sudo where needed."
@@ -44,25 +45,20 @@ else
 fi
 
 log "Disabling kiosk auto-boot"
-# \b, not \s*$ — deploy-dashboard.sh's startx line now carries "-- -nocursor"
-# (hides the mouse pointer), so it no longer ends right after "startx".
-if [[ -f "$HOME/.bash_profile" ]] && grep -qE '^\s*startx\b' "$HOME/.bash_profile"; then
-  cp "$HOME/.bash_profile" "$HOME/.bash_profile.bak.$(date +%s)"
-  # `:` (a real, valid no-op command), NOT a bare comment -- replacing the
-  # only statement inside an if/then/fi with just a comment leaves an
-  # EMPTY then-body, which is a bash syntax error ("unexpected token
-  # `fi'"). That error aborts sourcing the rest of .bash_profile entirely,
-  # silently skipping any later block too -- including a freshly
-  # redeployed, otherwise-correct startx block. Confirmed live: this
-  # exact bug caused a real Pi's kiosk to never come back after
-  # disable-kiosk.sh + a redeploy, verified with a standalone repro before
-  # this fix (see CLAUDE.md). Whole line replaced (not just the "startx"
-  # word) since any trailing args (-- -nocursor) don't need preserving —
-  # re-running deploy-dashboard.sh always writes the current correct line.
-  sed -i -E 's/^(\s*)startx\b.*/\1: # startx disabled by disable-kiosk.sh -- re-run deploy-dashboard.sh to restore/' "$HOME/.bash_profile"
-  echo "Commented out the 'startx' line in ~/.bash_profile — kiosk will no longer auto-launch on boot."
+# The kiosk block in .bash_profile is managed by ensure_block_in_file (see
+# scripts/lib.sh) under the same 'currency-dashboard-kiosk' marker that
+# deploy-dashboard.sh's setup_console_x() writes — --remove-- rebuilds the
+# file with that whole block simply omitted, rather than trying to
+# pattern-match and neutralize the startx line in place. That in-place
+# approach used to be sed-based and once left an EMPTY if/then/fi body (a
+# bash syntax error that broke the rest of .bash_profile) — rebuilding the
+# file from a clean line array makes that whole bug class impossible: the
+# block is always removed as one complete unit, never partially edited.
+if [[ -f "$HOME/.bash_profile" ]] && grep -q "# BEGIN currency-dashboard-kiosk" "$HOME/.bash_profile"; then
+  ensure_block_in_file "$HOME/.bash_profile" "currency-dashboard-kiosk" --remove--
+  echo "Removed the kiosk autostart block from ~/.bash_profile — kiosk will no longer auto-launch on boot."
 else
-  echo "No active 'startx' line found in ~/.bash_profile — already disabled, or console+X kiosk was never configured on this board."
+  echo "No kiosk autostart block found in ~/.bash_profile — already disabled, or console+X kiosk was never configured on this board."
 fi
 
 log "Stopping any kiosk session currently running"

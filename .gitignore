@@ -1,7 +1,7 @@
 __pycache__
 .venv
 ssl/
-config.py
+.env
 data.json
 scripts/auto-update.conf
 auto-update.enabled
