@@ -29,7 +29,7 @@
 
 set -euo pipefail
 
-REPO_URL="${REPO_URL:-https://github.com/<your-username>/rpi_dash_currency.git}"
+REPO_URL="${REPO_URL:-https://github.com/rommo911/rpi_dash_currency.git}"
 INSTALL_DIR="${INSTALL_DIR:-$HOME/currency-dashboard}"
 SERVICE_NAME="currency-dashboard"
 APP_PORT="${APP_PORT:-5000}"
@@ -201,14 +201,23 @@ sudo systemctl daemon-reload
 sudo systemctl enable --now "${SERVICE_NAME}"
 
 log "7/11 Firewall: opening the HTTPS admin port"
-if command -v ufw >/dev/null 2>&1 && sudo ufw status 2>/dev/null | grep -q "Status: active"; then
+# Deliberately NOT gated on "is ufw active right now" — that check raced
+# harden-system.sh's own `ufw --force enable` a moment earlier on at
+# least one real deploy (ufw reported inactive at this exact instant, so
+# the rule was silently skipped and never added, even though ufw came up
+# active moments later). `ufw allow` queues the rule into ufw's rule set
+# regardless of whether ufw is currently enabled — it takes effect
+# whenever ufw is (or becomes) active, so there's nothing to race here.
+if command -v ufw >/dev/null 2>&1; then
   if [[ -n "$LAN_SUBNET" ]]; then
     sudo ufw allow from "$LAN_SUBNET" to any port "$HTTPS_PORT" proto tcp
   else
     sudo ufw allow "$HTTPS_PORT"/tcp
   fi
+  sudo ufw status 2>/dev/null | grep -q "Status: active" || \
+    log "ufw is installed but not active yet — rule was queued and will apply once ufw is enabled."
 else
-  log "ufw not active — skipping (nothing to open)"
+  log "ufw not installed — skipping (nothing to open)"
 fi
 
 log "8/11 Installing the auto-updater (git pull + cert renewal every 6h)"
@@ -273,11 +282,46 @@ configure_boot_files() {
 
   if is_armbian; then
     warn "Armbian/Orange Pi detected: Raspberry Pi /boot/config.txt and cmdline.txt are not assumed to be present or compatible."
-    warn "This image commonly uses Armbian boot configuration instead, and those flags are board-specific; no Pi-specific boot change is applied automatically here."
-    if [[ -f /boot/armbianEnv.txt || -f /boot/firmware/armbianEnv.txt ]]; then
-      warn "Found an Armbian boot environment file; review it manually if you need splash/console/blanking tweaks for this exact board."
+    warn "This image commonly uses Armbian boot configuration instead, and those flags are board-specific."
+    local armbian_env=""
+    if [[ -f /boot/armbianEnv.txt ]]; then
+      armbian_env="/boot/armbianEnv.txt"
+    elif [[ -f /boot/firmware/armbianEnv.txt ]]; then
+      armbian_env="/boot/firmware/armbianEnv.txt"
+    fi
+    if [[ -n "$armbian_env" ]]; then
+      # Mainline sunxi/rockchip DRM only lights up an HDMI connector when it
+      # sees a live hotplug-detect (HPD) signal from the display at boot —
+      # if the TV/monitor is off (or still warming up) when the board
+      # powers on, the connector can come up "disconnected" and X/Chromium
+      # never get a mode to render into, even after the TV is switched on
+      # later. `video=HDMI-A-1:<mode>e` (trailing "e" = force-enable) is
+      # the mainline-DRM equivalent of Raspberry Pi's
+      # hdmi_force_hotplug=1 — it forces that connector into the given
+      # mode unconditionally, independent of the live HPD line.
+      # "HDMI-A-1" is the generic DRM connector name for a board's first/
+      # only HDMI output (confirmed against this exact Orange Pi Zero 3
+      # via /sys/class/drm/card0-HDMI-A-1), not something board-specific
+      # we're guessing at.
+      ensure_key_tokens_in_file --sudo "$armbian_env" "extraargs" "$FILES_DIR/boot/armbian-extraargs-tokens.txt"
+      log "Ensured forced HDMI output mode is present in $armbian_env (extraargs=) — takes effect after a reboot"
+
+      # armbianEnv.txt's default `console=both` puts BOTH the serial UART
+      # and tty1 in the kernel's `console=` list, so every kernel/systemd
+      # boot message (and the "[ OK ] Started ..." status lines systemd
+      # itself prints) gets written straight to the HDMI display — visible
+      # scrolling boot log on a kiosk that's supposed to just show the
+      # dashboard. Switching to `console=serial` drops tty1 out of the
+      # kernel's console list entirely: tty1 stays blank/uninitialized
+      # (nothing to silence, because nothing is ever printed to it) from
+      # power-on until getty/X take it over, while the serial UART keeps
+      # carrying full boot output for debugging. This doesn't touch
+      # `bootlogo`/`splash=verbose` — those only matter to plymouth, which
+      # isn't installed on this image, so they're already inert.
+      ensure_key_value_in_file --sudo "$armbian_env" "console" "serial"
+      log "Silenced kernel/systemd boot messages on the HDMI display in $armbian_env (console=serial; still visible over the serial UART) — takes effect after a reboot"
     else
-      warn "No Armbian boot environment file was found at /boot/armbianEnv.txt or /boot/firmware/armbianEnv.txt — boot tweaks remain OS-specific and are left alone."
+      warn "No Armbian boot environment file was found at /boot/armbianEnv.txt or /boot/firmware/armbianEnv.txt — HDMI force-enable and silent-boot tweaks skipped."
     fi
     return 0
   fi
@@ -294,6 +338,50 @@ configure_boot_files() {
     log "Ensured silent-boot/no-console-blanking tokens are present in $cmdline"
   fi
 }
+
+reduce_network_wait_online_delay() {
+  # The dashboard itself never needs network readiness at startup
+  # (static local prices, no runtime API calls), but some
+  # *-wait-online.service unit is enabled on most Debian/Armbian/Pi OS
+  # images regardless, blocking network-online.target until the network
+  # stack considers itself fully "online". Confirmed live on an Orange Pi
+  # Zero 3 via `systemd-analyze critical-chain`: systemd-networkd-wait-
+  # online.service alone was ~10.5s of a ~15.6s total userspace boot,
+  # sitting directly in the chain that gates getty.target/
+  # graphical.target — i.e. the delay between power-on and the
+  # autologin/kiosk screen appearing.
+  #
+  # This only bounds how long systemd will wait for the unit via
+  # TimeoutStartSec (systemd's own external kill-timeout for the start
+  # job) — it does NOT disable, mask, or otherwise touch the unit's
+  # enablement or dependency graph, and leaves whatever wait-online
+  # implementation/args the OS image already ships completely alone.
+  # That distinction matters, not just style: an earlier version of this
+  # fix used `systemctl mask`, which is UNSAFE in practice — confirmed
+  # live on this same board, masking systemd-networkd-wait-online.service
+  # caused intermittent network flapping after reboot (brief connectivity
+  # then drop, repeatedly). Root cause: this board's image manages Wi-Fi
+  # via netplan + systemd-networkd (NetworkManager isn't even installed
+  # on it, despite that being this project's usual assumption — nmcli is
+  # not guaranteed present on every Armbian image), and
+  # systemd-networkd-wait-online.service is `BindsTo=systemd-networkd.
+  # service`, which reacted badly to being masked outright. A
+  # TimeoutStartSec cap avoids that risk entirely: if the unit finishes
+  # on its own (as it always does here, just slower than needed), nothing
+  # changes; if it doesn't finish within the cap, systemd kills it and
+  # network-online.target proceeds anyway (a `Wants=`, not `Requires=`,
+  # relationship — one failed/killed dependency doesn't block the target).
+  local unit
+  for unit in systemd-networkd-wait-online.service NetworkManager-wait-online.service; do
+    if systemctl list-unit-files "$unit" 2>/dev/null | grep -q "$unit"; then
+      render_template "$FILES_DIR/systemd/wait-online-fast-timeout.conf" \
+        "/etc/systemd/system/${unit}.d/currency-dashboard-fast-timeout.conf"
+      log "Capped $unit's start timeout at 5s (was blocking boot far longer than the dashboard needs)"
+    fi
+  done
+  sudo systemctl daemon-reload
+}
+reduce_network_wait_online_delay
 
 if is_headless; then
   log "10/11 Skipping kiosk setup (headless)"
@@ -357,8 +445,32 @@ setup_console_x() {
   # for the root window — the default X-server arrow cursor was still
   # rendering on top of that). -nocursor tells Xorg not to draw a cursor
   # sprite at all, ever.
-  sudo apt install -y xserver-xorg xinit matchbox-window-manager
+  #
+  # x11-xserver-utils (provides `xset`) is required, not optional, even
+  # though nothing above mentions it: scripts/files/kiosk/xinitrc calls
+  # `xset -dpms`, `xset s off`, `xset s noblank` to keep the screen from
+  # ever blanking. Without this package `xset` doesn't exist, those three
+  # calls fail with "command not found" and .xinitrc (no `set -e`) just
+  # carries on to matchbox/Chromium anyway — so DPMS is never actually
+  # disabled and the X server falls back to its default ~10-minute DPMS
+  # standby timeout. This was a real, live bug: confirmed on a deployed
+  # Orange Pi Zero 3 where the HDMI signal dropped to "no signal" after
+  # almost exactly 10 minutes while the dashboard/Chromium were still
+  # running fine underneath — and reproduced by finding `xset` genuinely
+  # missing from that board's installed packages.
+  sudo apt install -y xserver-xorg xinit matchbox-window-manager x11-xserver-utils
   render_template_user "$FILES_DIR/kiosk/xinitrc" "$HOME/.xinitrc" "APP_PORT=$APP_PORT" "KIOSK_CMD=$KIOSK_CMD"
+  # render_template_user only writes content, never touches permissions —
+  # relying on an inherited/pre-existing executable bit (e.g. from an
+  # /etc/skel default) to make `startx`/`xinit` treat this as a direct
+  # client program is fragile and was confirmed to actually fail this
+  # way: overwriting .xinitrc through a path that recreates the inode
+  # (rather than truncate-in-place) reset it to non-executable, and
+  # xinit then silently launched Xorg with no client at all (bare black
+  # screen forever, no matchbox, no Chromium, no error visible anywhere
+  # on-screen since the console is now silent). chmod it explicitly so
+  # this never depends on what the file happened to be before.
+  chmod +x "$HOME/.xinitrc"
 
   # ensure_block_in_file (see scripts/lib.sh) always converges .bash_profile
   # on exactly the current scripts/files/kiosk/bash-profile.snippet content,
@@ -368,13 +480,33 @@ setup_console_x() {
   # --remove counterpart uses.
   ensure_block_in_file "$HOME/.bash_profile" "currency-dashboard-kiosk" "$FILES_DIR/kiosk/bash-profile.snippet"
 
+  # tty1 autologin is what actually reaches .bash_profile/.xinitrc above on
+  # boot — without it, boot stops at a manual login prompt (a real, live
+  # bug: confirmed on an Orange Pi Zero 3 running Armbian, which has no
+  # raspi-config at all, so the old raspi-config-only path below never
+  # configured autologin there). This systemd getty override is
+  # distro-agnostic — it's literally the same mechanism raspi-config's own
+  # boot-behaviour option installs under the hood on Raspberry Pi OS — so
+  # it's applied unconditionally here instead of only for is_raspi_os.
+  render_template "$FILES_DIR/systemd/getty-autologin.conf" \
+    "/etc/systemd/system/getty@tty1.service.d/autologin.conf" \
+    "RUN_USER=$USER"
+  sudo systemctl daemon-reload
+  log "Configured tty1 autologin as $USER (takes effect on next boot, or: sudo systemctl restart getty@tty1)"
+
+  # `.hushlogin` is the standard mechanism (checked by login/PAM's
+  # pam_motd and the shell itself) to suppress the MOTD banner and "Last
+  # login: ..." line on this user's console sessions — otherwise that
+  # text prints to tty1 immediately after autologin, before
+  # .bash_profile's `startx` line even runs, so it's visible on the
+  # kiosk screen for a moment before X takes over.
+  touch "$HOME/.hushlogin"
+
   if is_raspi_os && command -v raspi-config >/dev/null 2>&1; then
     sudo raspi-config nonint do_boot_behaviour B2 || true
     log "Configured console autologin + startx kiosk (Raspberry Pi OS Lite)"
   else
-    warn "Armbian/Orange Pi detected: generic X11 kiosk setup was installed, but no raspi-config boot-behaviour hook was available."
-    warn "If your Armbian image does not auto-login or start X on tty1, configure a distro-native autologin method manually."
-    log "Configured generic X11 kiosk launch in ~/.bash_profile ~/.xinitrc"
+    log "Configured generic X11 kiosk launch in ~/.bash_profile ~/.xinitrc (Armbian/Orange Pi)"
   fi
 }
 

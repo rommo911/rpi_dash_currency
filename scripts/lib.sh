@@ -256,3 +256,125 @@ ensure_tokens_in_cmdline() {
     fi
   fi
 }
+
+# ensure_key_tokens_in_file [--sudo] <file> <key> <tokens-file>
+# For a multi-line KEY=value file that also carries unrelated keys we must
+# not touch (Armbian's armbianEnv.txt) — guarantees the whitespace-
+# separated tokens from <tokens-file> are present in ONE specific key's
+# value, appending a new "key=token1 token2 ..." line if the key doesn't
+# exist yet, or merging into its existing value (without disturbing any
+# other token already there) if it does. Every other line, and their
+# order, is left untouched. Same no-sed, backup-on-change conventions as
+# ensure_tokens_in_cmdline.
+ensure_key_tokens_in_file() {
+  local use_sudo=false
+  if [[ "${1:-}" == "--sudo" ]]; then
+    use_sudo=true
+    shift
+  fi
+  local file="$1" key="$2" tokens_file="$3"
+  [[ -f "$tokens_file" ]] || { warn "Tokens file not found: $tokens_file"; return 1; }
+
+  local -a existing=()
+  local line
+  if [[ -f "$file" ]]; then
+    while IFS= read -r line || [[ -n "$line" ]]; do
+      existing+=("$line")
+    done < "$file"
+  fi
+
+  local -a out=()
+  local found=false tok
+  for line in "${existing[@]}"; do
+    if [[ "$line" == "$key="* ]]; then
+      found=true
+      local val="${line#"$key="}"
+      for tok in $(cat "$tokens_file"); do
+        if [[ -z "$val" ]]; then
+          val="$tok"
+        elif [[ " $val " != *" $tok "* ]]; then
+          val="$val $tok"
+        fi
+      done
+      out+=("$key=$val")
+    else
+      out+=("$line")
+    fi
+  done
+  if ! "$found"; then
+    local val=""
+    for tok in $(cat "$tokens_file"); do
+      if [[ -z "$val" ]]; then val="$tok"; else val="$val $tok"; fi
+    done
+    out+=("$key=$val")
+  fi
+
+  local new_content old_content
+  new_content="$(printf '%s\n' "${out[@]}")"
+  old_content="$(printf '%s\n' "${existing[@]}")"
+
+  if [[ "$new_content" != "$old_content" ]]; then
+    if "$use_sudo"; then
+      sudo mkdir -p "$(dirname "$file")"
+      [[ -f "$file" ]] && { sudo cp "$file" "${file}.bak.$(date +%s)" 2>/dev/null || true; }
+      printf '%s\n' "${out[@]}" | sudo tee "$file" >/dev/null
+    else
+      mkdir -p "$(dirname "$file")"
+      [[ -f "$file" ]] && { cp "$file" "${file}.bak.$(date +%s)" 2>/dev/null || true; }
+      printf '%s\n' "${out[@]}" > "$file"
+    fi
+  fi
+}
+
+# ensure_key_value_in_file [--sudo] <file> <key> <value>
+# For a multi-line KEY=value file (Armbian's armbianEnv.txt) — sets one
+# specific key to exactly <value>, OVERWRITING whatever it was before
+# (unlike ensure_key_tokens_in_file, which only ever adds to an existing
+# value without disturbing what's already there). Adds a new
+# "key=value" line if the key doesn't exist yet. Every other line, and
+# their order, is left untouched. Same no-sed, backup-on-change
+# conventions as the rest of this file.
+ensure_key_value_in_file() {
+  local use_sudo=false
+  if [[ "${1:-}" == "--sudo" ]]; then
+    use_sudo=true
+    shift
+  fi
+  local file="$1" key="$2" value="$3"
+
+  local -a existing=()
+  local line
+  if [[ -f "$file" ]]; then
+    while IFS= read -r line || [[ -n "$line" ]]; do
+      existing+=("$line")
+    done < "$file"
+  fi
+
+  local -a out=()
+  local found=false
+  for line in "${existing[@]}"; do
+    if [[ "$line" == "$key="* ]]; then
+      found=true
+      out+=("$key=$value")
+    else
+      out+=("$line")
+    fi
+  done
+  "$found" || out+=("$key=$value")
+
+  local new_content old_content
+  new_content="$(printf '%s\n' "${out[@]}")"
+  old_content="$(printf '%s\n' "${existing[@]}")"
+
+  if [[ "$new_content" != "$old_content" ]]; then
+    if "$use_sudo"; then
+      sudo mkdir -p "$(dirname "$file")"
+      [[ -f "$file" ]] && { sudo cp "$file" "${file}.bak.$(date +%s)" 2>/dev/null || true; }
+      printf '%s\n' "${out[@]}" | sudo tee "$file" >/dev/null
+    else
+      mkdir -p "$(dirname "$file")"
+      [[ -f "$file" ]] && { cp "$file" "${file}.bak.$(date +%s)" 2>/dev/null || true; }
+      printf '%s\n' "${out[@]}" > "$file"
+    fi
+  fi
+}

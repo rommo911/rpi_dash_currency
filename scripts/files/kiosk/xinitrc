@@ -1,3 +1,12 @@
+# Everything below (matchbox's own stderr chatter, the curl polling loop,
+# and Chromium's own famously noisy stderr output once exec'd at the
+# bottom) would otherwise print straight to the tty1 console — the same
+# physical screen the kiosk uses — for the few seconds between login and
+# Chromium actually taking over the display. Redirecting this script's
+# own stdout/stderr once, up front, covers all of it (everything below
+# inherits these fds, including the final `exec`).
+exec >"$HOME/.xinitrc.log" 2>&1
+
 xset -dpms
 xset s off
 xset s noblank

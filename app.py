@@ -95,7 +95,7 @@ HTTPS_ENABLED = os.path.isfile(CERT_FILE) and os.path.isfile(KEY_FILE)
 # Resets on process restart — acceptable for a single-instance Pi app.
 # fail2ban (scripts/deploy-dashboard.sh installs a jail watching the log
 # line emitted below) provides the firewall-level backstop for this.
-ADMIN_MAX_FAILURES = 5
+ADMIN_MAX_FAILURES = 3
 ADMIN_LOCKOUT_WINDOW = 300  # seconds
 _admin_failures_lock = threading.Lock()
 _admin_failures = {}  # ip -> [failure timestamps]
@@ -741,7 +741,7 @@ setTimeout(showHostInfo, 120000);
 
 function fmt(n) {
   if (n === null || n === undefined) return '—';
-  return Number(n).toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2});
+  return Number(n).toLocaleString(undefined, {minimumFractionDigits: 1, maximumFractionDigits: 2});
 }
 
 function esc(s) {
