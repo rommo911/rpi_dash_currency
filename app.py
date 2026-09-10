@@ -78,6 +78,7 @@ def _read_git_commit():
 
 APP_VERSION = _read_version()
 APP_COMMIT = _read_git_commit()
+APP_VERSION_STRING = f"{APP_VERSION}+{APP_COMMIT}" if APP_COMMIT else APP_VERSION
 
 APP_PORT = int(os.environ.get("APP_PORT", "5000"))
 HTTPS_PORT = int(os.environ.get("HTTPS_PORT", "5443"))
@@ -715,6 +716,7 @@ DASHBOARD_HTML = """
 
 <script>
 const MAX_DISPLAYED_CURRENCIES = 5;
+const PAGE_LOAD_VERSION = {{ version | tojson }};
 let lastUpdatedAt = null;
 let lastCount = 0;
 let lastHostInfo = { hostname: '', ip: '' };
@@ -849,6 +851,15 @@ async function refresh() {
         throw new Error(`HTTP ${res.status}`);
     }
     const d = await res.json();
+
+    if (d.app_version && d.app_version !== PAGE_LOAD_VERSION) {
+      // A deploy/auto-update swapped in new app code (e.g. changed JS in
+      // this very template) after this tab's page was loaded — restarting
+      // the systemd service does not touch an already-open kiosk tab, so
+      // without this the kiosk would keep running stale JS indefinitely.
+      location.reload();
+      return;
+    }
 
     lastHostInfo = { hostname: d.hostname || '', ip: d.ip || '' };
 
@@ -1175,7 +1186,7 @@ function filterDecimalInput(el) {
 @app.route("/")
 def dashboard():
     data = load_data()
-    return render_template_string(DASHBOARD_HTML, settings=data["settings"])
+    return render_template_string(DASHBOARD_HTML, settings=data["settings"], version=APP_VERSION_STRING)
 
 
 @app.route("/api/data")
@@ -1191,6 +1202,7 @@ def api_data():
         "admin_language": data["settings"]["admin_language"],
         "hostname": socket.gethostname(),
         "ip": get_lan_ip(),
+        "app_version": APP_VERSION_STRING,
     })
 
 
