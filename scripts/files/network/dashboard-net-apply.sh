@@ -458,6 +458,45 @@ wifi_connected_netplan() {
   ip -4 route show dev "$dev" 2>/dev/null | grep -q '^default'
 }
 
+# ufw on a provisioned box is "default deny (incoming)" (harden-system.sh)
+# and only opens 22/5000/5443. systemd-networkd's DHCP server receives on a
+# normal UDP socket bound to port 67, so every client DISCOVER was hitting
+# INPUT DROP before it ever reached the server — the AP associated fine and
+# 192.168.50.1:5000 was reachable (that port IS allowed), but nobody ever
+# got a lease. ufw's own built-in DHCP rule only covers the CLIENT direction
+# (sport 67 -> dport 68), not inbound server traffic. Confirmed live.
+# Scoped to the AP interface and torn down again on stop, so nothing stays
+# open once the box is back in normal client mode.
+ap_firewall_open() {
+  local dev="$1"
+  if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q "^Status: active"; then
+    if ufw allow in on "$dev" to any port 67 proto udp >/dev/null 2>&1; then
+      log "Firewall: opened UDP/67 (DHCP) on $dev via ufw"
+      return 0
+    fi
+    log "WARNING: ufw is active but refused the DHCP rule — falling back to iptables"
+  fi
+  if command -v iptables >/dev/null 2>&1; then
+    iptables -C INPUT -i "$dev" -p udp --dport 67 -j ACCEPT >/dev/null 2>&1 \
+      || iptables -I INPUT 1 -i "$dev" -p udp --dport 67 -j ACCEPT >/dev/null 2>&1
+    log "Firewall: opened UDP/67 (DHCP) on $dev via iptables"
+  else
+    log "WARNING: neither ufw nor iptables available — cannot open UDP/67; DHCP may be blocked"
+  fi
+}
+
+ap_firewall_close() {
+  local dev="$1"
+  if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q "^Status: active"; then
+    ufw delete allow in on "$dev" to any port 67 proto udp >/dev/null 2>&1 || true
+  fi
+  if command -v iptables >/dev/null 2>&1; then
+    while iptables -C INPUT -i "$dev" -p udp --dport 67 -j ACCEPT >/dev/null 2>&1; do
+      iptables -D INPUT -i "$dev" -p udp --dport 67 -j ACCEPT >/dev/null 2>&1 || break
+    done
+  fi
+}
+
 start_ap_netplan() {
   local wifi_dev="$1" ssid="$2" password="$3"
   ap_hostapd_active && return 0
@@ -494,6 +533,7 @@ EOF
   rm -f "$AP_NETWORKD_FILE_LEGACY"
   networkctl reload >/dev/null 2>&1 || true
   ip link set "$wifi_dev" up >/dev/null 2>&1 || true
+  ap_firewall_open "$wifi_dev"
 
   cat > "$AP_HOSTAPD_CONF" <<EOF
 interface=$wifi_dev
@@ -543,6 +583,11 @@ EOF
   fi
   log "AP link state: $(networkctl status "$wifi_dev" 2>/dev/null | tr -s ' \n' ' ' | grep -o 'Network File: [^ ]*' || echo 'unknown')"
   log "AP addresses: $(ip -4 -o addr show dev "$wifi_dev" 2>/dev/null | tr -s ' ' | cut -d' ' -f4 | tr '\n' ' ')"
+  if ss -lun 2>/dev/null | grep -q ":67[[:space:]]"; then
+    log "AP DHCP server: listening on UDP/67"
+  else
+    log "ERROR: nothing listening on UDP/67 — systemd-networkd did not start its DHCP server"
+  fi
 }
 
 # stop_ap_netplan — always safe to call even if the AP isn't active
@@ -554,6 +599,7 @@ stop_ap_netplan() {
   ap_hostapd_active && log "Stopping emergency AP to attempt reconnect to primary Wi-Fi"
   systemctl stop "$AP_HOSTAPD_UNIT" >/dev/null 2>&1 || true
   rm -f "$AP_NETWORKD_FILE" "$AP_NETWORKD_FILE_LEGACY" "$AP_STARTED_FILE"
+  ap_firewall_close "$wifi_dev"
   networkctl reload >/dev/null 2>&1 || true
   ip addr flush dev "$wifi_dev" >/dev/null 2>&1 || true
   systemctl start "netplan-wpa-${wifi_dev}.service" >/dev/null 2>&1 || true
@@ -758,6 +804,11 @@ EOF
 
 log "dashboard-net-apply daemon started (config=$NET_CONFIG_FILE)"
 mkdir -p "$STATUS_DIR"
+# Upgrade cleanup: a box provisioned before the 05- rename could still
+# carry the old, always-losing 90- file if the daemon was killed while the AP
+# was up. It never wins against netplan's 10-netplan-*.network anyway, but
+# leaving it behind is confusing — drop it unconditionally at startup.
+rm -f "$AP_NETWORKD_FILE_LEGACY"
 nmcli radio wifi on >/dev/null 2>&1 || true
 
 while true; do

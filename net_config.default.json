@@ -1,0 +1,17 @@
+{
+  "wifi": [
+    {
+      "ssid": "kiosk",
+      "password": "20142015"
+    },
+    {
+      "ssid": "kiosk2",
+      "password": "11112222"
+    }
+  ],
+  "ap_fallback": {
+    "enabled": true,
+    "ssid": "dashboardAP",
+    "password": "11111111"
+  }
+}

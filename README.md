@@ -36,6 +36,12 @@ Ships with 4 default currencies: **SYP** (new Syrian pound flag),
 - `data.json` — persisted currency list, edited via `/admin`. Also
   gitignored, also created on first run from `data.default.json` — same
   reasoning: live prices survive updates no matter what
+- `net_config.json` — Wi-Fi networks + emergency-hotspot credentials,
+  edited via `/admin`. Gitignored and `chmod 600` (it holds plaintext
+  Wi-Fi passwords), created on deploy from `net_config.default.json`
+- `net_config.default.json` — tracked template for the above: the networks
+  and hotspot a freshly provisioned board comes up with, so it can reach
+  the network with no manual setup. Edit it if your Wi-Fi changes
 - `requirements.txt` — just Flask
 - `static/flags/` — local flag icons; the 4 defaults ship in the repo, more
   are added here automatically (or by upload) as you add currencies

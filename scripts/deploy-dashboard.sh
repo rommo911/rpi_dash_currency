@@ -115,7 +115,7 @@ FILES_DIR="$INSTALL_DIR/scripts/files"
 # shellcheck disable=SC1091
 source "$INSTALL_DIR/scripts/lib.sh"
 
-log "3/13 Setting up local config (data.json, .env, auto-update.conf)"
+log "3/13 Setting up local config (data.json, .env, net_config.json, auto-update.conf)"
 # These files are gitignored and never committed as themselves — copied
 # from their tracked templates only if missing, so a later `git reset --hard`
 # (see scripts/auto-update.sh) can never touch live prices, the real admin
@@ -131,6 +131,22 @@ if [[ ! -f "$INSTALL_DIR/.env" ]]; then
 fi
 if [[ ! -f "$INSTALL_DIR/scripts/auto-update.conf" ]]; then
   cp "$INSTALL_DIR/scripts/auto-update.conf.example" "$INSTALL_DIR/scripts/auto-update.conf"
+fi
+# net_config.json is the Wi-Fi/hotspot desired state the admin panel writes
+# and dashboard-net-apply polls. Without this copy a freshly provisioned
+# board came up with NO known networks and NO hotspot fallback at all — it
+# would sit there unreachable until someone plugged in Ethernet or a
+# keyboard to reach /admin, which on a headless wall-mounted kiosk is the
+# one situation the AP fallback exists to prevent. Seeding it from the
+# tracked template makes a fresh board join a known network, or raise its
+# own AP, with zero manual steps.
+#
+# 600, not the default 644: unlike data.json this file holds plaintext
+# Wi-Fi/hotspot PSKs — same reasoning as .env above, and the same mode
+# save_net_config() re-applies on every write in app.py.
+if [[ ! -f "$INSTALL_DIR/net_config.json" ]]; then
+  cp "$INSTALL_DIR/net_config.default.json" "$INSTALL_DIR/net_config.json"
+  chmod 600 "$INSTALL_DIR/net_config.json"
 fi
 # Auto-update is a flag FILE (see app.py/auto-update.sh), not a data.json
 # setting — the admin panel's "Enable automatic updates" checkbox
@@ -214,6 +230,34 @@ if command -v ufw >/dev/null 2>&1; then
   else
     sudo ufw allow "$HTTPS_PORT"/tcp
   fi
+  # A LAN_SUBNET-scoped rule set locks out the emergency hotspot's OWN
+  # clients: the AP hands out 192.168.50.0/24 addresses, which are not in
+  # "$LAN_SUBNET", so with only the rule above plus harden-system.sh's
+  # equally-scoped 22/$APP_PORT rules, a laptop joined to the fallback AP
+  # can associate, get a lease, and still reach nothing at all — which
+  # defeats the entire point of a fallback whose only job is to keep the
+  # box reachable when the normal LAN is gone. So open the AP subnet to the
+  # same three ports.
+  #
+  # Applied unconditionally, NOT only in the LAN_SUBNET branch above: this
+  # script is explicitly re-runnable standalone (that's how the auto-updater
+  # and manual redeploys both use it), and such a run can easily have an
+  # empty LAN_SUBNET while harden-system.sh's 22/$APP_PORT rules from the
+  # ORIGINAL provision are still subnet-scoped. Gating these on LAN_SUBNET
+  # would silently skip them in exactly that case. Redundant (not harmful)
+  # when everything is already open to Anywhere.
+  #
+  # NOT included here: the DHCP port itself. A DHCP DISCOVER is sent from
+  # source 0.0.0.0, so a from-subnet rule can never match it — that one has
+  # to be interface-scoped, and the daemon adds/removes it around each AP
+  # session (ap_firewall_open/ap_firewall_close in
+  # scripts/files/network/dashboard-net-apply.sh) since only the daemon
+  # knows which interface the AP actually came up on. Keep AP_SUBNET below
+  # in sync with AP_IFACE_CIDR there.
+  AP_SUBNET="192.168.50.0/24"
+  sudo ufw allow from "$AP_SUBNET" to any port "$HTTPS_PORT" proto tcp
+  sudo ufw allow from "$AP_SUBNET" to any port "$APP_PORT" proto tcp
+  sudo ufw allow from "$AP_SUBNET" to any port 22 proto tcp
   sudo ufw status 2>/dev/null | grep -q "Status: active" || \
     log "ufw is installed but not active yet — rule was queued and will apply once ufw is enabled."
 else
@@ -276,7 +320,16 @@ render_template "$FILES_DIR/systemd/dashboard-net-apply.service" \
   "/etc/systemd/system/dashboard-net-apply.service" \
   "DAEMON_PATH=$DAEMON_PATH"
 sudo systemctl daemon-reload
+# Upgrade path: the emergency AP's networkd drop-in used to be named
+# 90-dashboard-ap.network, which always lost to netplan's generated
+# 10-netplan-<dev>.network (systemd-networkd applies only the FIRST
+# matching file in lexical filename order across /etc, /run and /usr/lib —
+# /etc only wins for an identical filename). It is 05-dashboard-ap.network
+# now; remove any stale copy of the old one so an upgraded box is left in
+# exactly the same state as a freshly provisioned one.
+sudo rm -f /etc/systemd/network/90-dashboard-ap.network
 sudo systemctl enable --now dashboard-net-apply
+sudo systemctl restart dashboard-net-apply
 
 # On any image WITHOUT NetworkManager (confirmed live on Armbian/Orange Pi,
 # which uses netplan + systemd-networkd + wpa_supplicant instead), the

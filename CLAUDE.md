@@ -48,6 +48,22 @@ data.json                     Runtime state: currencies list + settings.
                                data.default.json.
 data.default.json             Tracked template for data.json (the shipped
                                default currencies/settings).
+net_config.json                Runtime Wi-Fi/hotspot DESIRED state written
+                               by the admin panel (save_net_config()) and
+                               polled by the dashboard-net-apply daemon.
+                               GITIGNORED — same reasoning as data.json,
+                               plus it holds plaintext Wi-Fi/AP PSKs, so
+                               it's chmod 600 everywhere it's written.
+                               Created on deploy from
+                               net_config.default.json if missing.
+net_config.default.json        Tracked template for net_config.json — the
+                               Wi-Fi SSIDs/passwords and AP-fallback
+                               credentials a freshly provisioned board
+                               comes up with. Without it a fresh board has
+                               no known networks AND no hotspot, i.e. it is
+                               unreachable headless. NOTE: this file
+                               contains real PSKs in a PUBLIC repo; see
+                               "Things to watch for".
 VERSION                        Tracked, single line, e.g. "1.1.0". Bump by
                                hand for a meaningful release — nothing
                                bumps it automatically. app.py reads it at
@@ -683,6 +699,49 @@ before touching any provisioning/deploy script.
   older version of it). `ensure_block_in_file` fixes that by construction
   — every run fully removes any old managed block and re-adds the current
   one, so there's no "already configured" check to get wrong.
+- **The emergency AP's networkd drop-in MUST sort before netplan's
+  generated `10-netplan-<dev>.network`, and ufw MUST be opened for UDP/67
+  — two separate, independently-fatal bugs, both found live, both with
+  the exact same symptom: clients associate to the hotspot fine and then
+  never get an IP.** (1) systemd-networkd applies only the FIRST matching
+  `.network` file, sorted by FILENAME across `/etc`, `/run` and
+  `/usr/lib` — `/etc` beats `/run` only for an *identical* filename. The
+  drop-in was originally `90-dashboard-ap.network`, so netplan's
+  `/run/systemd/network/10-netplan-wlan0.network` won every time and
+  wlan0 silently kept `DHCP=ipv4` (client): no `192.168.50.1`, no
+  `DHCPServer=yes`. It's `05-dashboard-ap.network` now — don't renumber
+  it above 10. (2) Even with the address correct, `harden-system.sh`
+  leaves ufw at `default deny (incoming)` and only opens 22/`APP_PORT`/
+  `HTTPS_PORT`; systemd-networkd's DHCP server receives on a normal UDP
+  socket bound to port 67, so every client DISCOVER hit `INPUT DROP`
+  before reaching it. ufw's own built-in DHCP rule covers only the
+  *client* direction (sport 67 → dport 68). `ap_firewall_open()`/
+  `ap_firewall_close()` in the daemon add and remove an
+  interface-scoped `ufw allow in on <dev> to any port 67 proto udp`
+  around each AP session — interface-scoped because a DHCP DISCOVER has
+  source `0.0.0.0`, so a `from <subnet>` rule can never match it.
+  `deploy-dashboard.sh` separately opens `192.168.50.0/24` to 22/
+  `APP_PORT`/`HTTPS_PORT`, unconditionally, because a `LAN_SUBNET`-scoped
+  rule set otherwise locks out the fallback AP's own clients — the exact
+  situation the fallback exists for. `start_ap_netplan()` now verifies
+  (rather than assumes) that the address landed and that something is
+  listening on UDP/67, logging a loud ERROR for either — both of these
+  bugs were invisible for multiple debugging rounds precisely because
+  nothing checked.
+- **`net_config.default.json` ships real Wi-Fi/hotspot passwords in a
+  repo that is PUBLIC on GitHub.** This is a deliberate, requested
+  trade-off, not an oversight: a fresh board clones this repo over the
+  network, so baking the credentials into a tracked template is the only
+  way `deploy-dashboard.sh` can hand a headless kiosk a working network
+  with zero manual steps. The cost is that anyone can read those PSKs.
+  If that stops being acceptable, the fix is NOT to blank the template
+  (that silently reverts a fresh board to unreachable) — either make the
+  repo private, or add a deploy-time lookup for the file somewhere
+  outside the checkout (the FAT `/boot` partition is writable from any
+  PC at flash time) and fall back to the tracked template only when that
+  is absent. Rotating the PSKs in the admin panel does not rewrite this
+  file — it only writes `net_config.json` — so the template keeps
+  whatever was committed until someone updates it by hand.
 - **Wi-Fi scanning can silently return nothing on a truly fresh SD
   card** — the radio can be rfkill-soft-blocked or NetworkManager's own
   Wi-Fi radio toggle can be off, and a scan in either state just comes
