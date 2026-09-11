@@ -49,17 +49,63 @@ STATUS_DIR="/run/dashboard-net"
 STATUS_FILE="$STATUS_DIR/status.json"
 APPLIED_HASH_FILE="$STATUS_DIR/applied.sha256"
 APPLIED_SSIDS_FILE="$STATUS_DIR/applied_ssids"
+AP_STARTED_FILE="$STATUS_DIR/ap_started_at"
 
 NETPLAN_FILE="/etc/netplan/90-dashboard-wifi.yaml"
 AP_IFACE_IP="192.168.50.1"
 AP_IFACE_CIDR="192.168.50.1/24"
 AP_HOSTAPD_CONF="/run/dashboard-ap-hostapd.conf"
 AP_HOSTAPD_UNIT="dashboard-ap-hostapd"
-AP_NETWORKD_FILE="/etc/systemd/network/90-dashboard-ap.network"
+# MUST sort lexically BEFORE netplan's generated
+# /run/systemd/network/10-netplan-<dev>.network: systemd-networkd applies
+# only the FIRST matching .network file, sorted by FILENAME across all of
+# /etc, /run and /usr/lib — /etc only wins over /run for an IDENTICAL
+# filename, which this is not. The old 90- name therefore always lost to
+# netplan's client config, so the AP interface silently kept DHCP=ipv4
+# (client) and never got 192.168.50.1 or DHCPServer=yes — hostapd came up
+# and clients associated fine, then hung forever waiting for a DHCP offer
+# nobody was sending. Confirmed live. Don't renumber this above 10.
+AP_NETWORKD_FILE="/etc/systemd/network/05-dashboard-ap.network"
+# Pre-fix name, still removed on every stop so an upgraded box can't keep
+# a stale copy around.
+AP_NETWORKD_FILE_LEGACY="/etc/systemd/network/90-dashboard-ap.network"
+
+# Minimum time to stay in AP mode before trying the primary Wi-Fi again.
+# Without this, reconcile_ap_netplan (called every CHECK_INTERVAL tick)
+# would tear the AP down to retry the primary connection on EVERY tick —
+# confirmed live: the AP was only up for the ~5s between ticks and down
+# for the ~25s WIFI_RECONNECT_TIMEOUT retry window on every cycle, so it
+# never stayed up long enough for a phone/laptop to even finish a scan
+# before it vanished again. Now a real dwell period, not a per-tick retry.
+AP_MIN_DWELL_SECONDS="${AP_MIN_DWELL_SECONDS:-300}"
 
 CHECK_INTERVAL="${CHECK_INTERVAL:-5}"
 
-log() { logger -t dashboard-net-apply "$1"; echo "$1"; }
+# Debug logging is OFF by default (an SD card is not where you want a
+# verbose daemon writing forever) — touch DEBUG_LOG_FLAG on the device to
+# turn it on, remove it to turn it off again, no service restart needed
+# since log() checks for it fresh on every call. `logger` (journald) still
+# always gets every message regardless of this flag, but journald's own
+# MaxLevelStore=err policy (see harden-system.sh) silently drops anything
+# below error severity system-wide — which is everything this daemon logs
+# — so in practice the journal alone never has this daemon's history. This
+# file is the only reliable way to pull what the daemon actually did.
+DEBUG_LOG_FLAG="/etc/dashboard-net-apply-debug"
+DEBUG_LOG_FILE="/var/log/dashboard-net-apply-debug.log"
+DEBUG_LOG_MAX_BYTES=5242880
+
+log() {
+  logger -t dashboard-net-apply "$1"
+  echo "$1"
+  if [[ -f "$DEBUG_LOG_FLAG" ]]; then
+    if [[ -f "$DEBUG_LOG_FILE" ]]; then
+      local sz
+      sz="$(stat -c%s "$DEBUG_LOG_FILE" 2>/dev/null || echo 0)"
+      (( sz > DEBUG_LOG_MAX_BYTES )) && : > "$DEBUG_LOG_FILE"
+    fi
+    printf '%s %s\n' "$(date '+%F %T')" "$1" >> "$DEBUG_LOG_FILE" 2>/dev/null
+  fi
+}
 
 # detect_backend — nmcli preferred whenever present (matches every
 # existing script in this repo, which all assume NetworkManager on
@@ -282,15 +328,20 @@ PYEOF
     new_ssids+=("${fields[i]}")
   done
 
-  # Fed the NUL-separated fields directly via stdin (rather than
-  # re-parsing net_config.json from Python again) so SSID/password bytes
-  # round-trip exactly as read_wifi_slots already extracted them.
-  python3 - "$wifi_dev" "$NETPLAN_FILE" < <(read_wifi_slots) <<'PYEOF'
+  # Fed the NUL-separated fields via a process-substitution FILE ARGUMENT
+  # (not stdin — `python3 -` already consumes stdin as its own script
+  # source when combined with the heredoc below, so a `< <(...)` stdin
+  # redirect here is silently clobbered by the heredoc's own stdin
+  # redirect and the script would read EOF instead of any field data;
+  # confirmed live, this was producing an always-empty access-points map).
+  # Passing it as argv[3] instead avoids the fd0 collision entirely.
+  python3 - "$wifi_dev" "$NETPLAN_FILE" <(read_wifi_slots) <<'PYEOF'
 import sys
 import yaml
 
-wifi_dev, dest = sys.argv[1], sys.argv[2]
-raw = sys.stdin.buffer.read()
+wifi_dev, dest, fields_path = sys.argv[1], sys.argv[2], sys.argv[3]
+with open(fields_path, "rb") as f:
+    raw = f.read()
 parts = raw.split(b"\0")[:-1] if raw.endswith(b"\0") else raw.split(b"\0")
 aps = {}
 for i in range(0, len(parts) - 1, 2):
@@ -410,17 +461,21 @@ wifi_connected_netplan() {
 start_ap_netplan() {
   local wifi_dev="$1" ssid="$2" password="$3"
   ap_hostapd_active && return 0
-  log "Wi-Fi unavailable after retrying — starting emergency AP ($ssid) on $wifi_dev"
+  log "Wi-Fi unavailable after retrying — starting emergency AP ($ssid) on $wifi_dev (staying up at least ${AP_MIN_DWELL_SECONDS}s)"
+  date +%s > "$AP_STARTED_FILE" 2>/dev/null || true
 
   systemctl stop "netplan-wpa-${wifi_dev}.service" >/dev/null 2>&1 || true
   ip link set "$wifi_dev" down >/dev/null 2>&1 || true
   ip addr flush dev "$wifi_dev" >/dev/null 2>&1 || true
 
-  # Hand this interface to systemd-networkd's own DHCP-server role
-  # instead of netplan's (client) config — /etc is searched before /run
-  # in systemd-networkd's own config precedence, so this wins over
-  # netplan's generated /run/systemd/network/*.network unconditionally,
-  # no filename-ordering trick needed.
+  # Hand this interface to systemd-networkd's own DHCP-server role instead
+  # of netplan's (client) config. See AP_NETWORKD_FILE above for why the
+  # 05- prefix is load-bearing. ConfigureWithoutCarrier=yes so the address
+  # is assigned even in the window before hostapd brings the radio up and
+  # gives the link carrier — without it networkd waits for carrier and the
+  # reconfigure below can no-op. No IPForward= here: renamed to
+  # IPv4Forwarding= in systemd 256+ and this box is 257, and an emergency
+  # admin AP routes nothing anyway.
   cat > "$AP_NETWORKD_FILE" <<EOF
 [Match]
 Name=$wifi_dev
@@ -428,16 +483,17 @@ Name=$wifi_dev
 [Network]
 Address=$AP_IFACE_CIDR
 DHCPServer=yes
-IPForward=no
+ConfigureWithoutCarrier=yes
+LinkLocalAddressing=no
 
 [DHCPServer]
 PoolOffset=10
 PoolSize=90
 EmitDNS=no
 EOF
+  rm -f "$AP_NETWORKD_FILE_LEGACY"
   networkctl reload >/dev/null 2>&1 || true
   ip link set "$wifi_dev" up >/dev/null 2>&1 || true
-  networkctl reconfigure "$wifi_dev" >/dev/null 2>&1 || true
 
   cat > "$AP_HOSTAPD_CONF" <<EOF
 interface=$wifi_dev
@@ -453,12 +509,40 @@ rsn_pairwise=CCMP
 EOF
   chmod 600 "$AP_HOSTAPD_CONF"
 
-  if systemd-run --unit="$AP_HOSTAPD_UNIT" --collect \
+  if ! systemd-run --unit="$AP_HOSTAPD_UNIT" --collect \
       -- /usr/sbin/hostapd "$AP_HOSTAPD_CONF" >/dev/null 2>&1; then
+    log "ERROR: failed to start hostapd for emergency AP — is 'hostapd' installed?"
+    return
+  fi
+
+  # Only NOW reconfigure the link: hostapd has just taken the radio into
+  # AP mode, so networkd re-reads its .network file against an interface
+  # that is actually up. Then verify the address really landed instead of
+  # assuming it did — a missing address here is exactly the failure mode
+  # (clients associate, then never get a DHCP lease) that the 05- rename
+  # above fixes, and it is silent unless checked for.
+  networkctl reconfigure "$wifi_dev" >/dev/null 2>&1 || true
+  local i ap_ip_ok="false"
+  for i in 1 2 3 4 5 6 7 8 9 10; do
+    if ip -4 addr show dev "$wifi_dev" 2>/dev/null | grep -q "inet ${AP_IFACE_IP}/"; then
+      ap_ip_ok="true"
+      break
+    fi
+    sleep 1
+  done
+
+  if [[ "$ap_ip_ok" == "true" ]]; then
     log "Emergency AP up: $ssid (${AP_IFACE_IP}, DHCP via systemd-networkd)"
   else
-    log "ERROR: failed to start hostapd for emergency AP — is 'hostapd' installed?"
+    # Last resort so the admin can still reach the box by static IP even
+    # if networkd refused the file: assign the address by hand. This does
+    # NOT give a DHCP server (only networkd can do that here), so it is
+    # logged as an ERROR, not treated as success.
+    ip addr add "$AP_IFACE_CIDR" dev "$wifi_dev" >/dev/null 2>&1 || true
+    log "ERROR: ${AP_IFACE_IP} not assigned by systemd-networkd — no DHCP server on $wifi_dev; clients will associate but get no IP"
   fi
+  log "AP link state: $(networkctl status "$wifi_dev" 2>/dev/null | tr -s ' \n' ' ' | grep -o 'Network File: [^ ]*' || echo 'unknown')"
+  log "AP addresses: $(ip -4 -o addr show dev "$wifi_dev" 2>/dev/null | tr -s ' ' | cut -d' ' -f4 | tr '\n' ' ')"
 }
 
 # stop_ap_netplan — always safe to call even if the AP isn't active
@@ -467,8 +551,9 @@ EOF
 # and restores the normal netplan-managed client.
 stop_ap_netplan() {
   local wifi_dev="$1"
+  ap_hostapd_active && log "Stopping emergency AP to attempt reconnect to primary Wi-Fi"
   systemctl stop "$AP_HOSTAPD_UNIT" >/dev/null 2>&1 || true
-  rm -f "$AP_NETWORKD_FILE"
+  rm -f "$AP_NETWORKD_FILE" "$AP_NETWORKD_FILE_LEGACY" "$AP_STARTED_FILE"
   networkctl reload >/dev/null 2>&1 || true
   ip addr flush dev "$wifi_dev" >/dev/null 2>&1 || true
   systemctl start "netplan-wpa-${wifi_dev}.service" >/dev/null 2>&1 || true
@@ -484,15 +569,32 @@ stop_ap_netplan() {
 # AP mode once the primary network is actually reachable again.
 try_reconnect_netplan() {
   local wifi_dev="$1" timeout="${WIFI_RECONNECT_TIMEOUT:-25}"
+  log "Attempting to reconnect to primary Wi-Fi (timeout ${timeout}s)"
   stop_ap_netplan "$wifi_dev"
   local i
   for ((i = 0; i < timeout; i++)); do
-    wifi_connected_netplan "$wifi_dev" && return 0
+    if wifi_connected_netplan "$wifi_dev"; then
+      log "Primary Wi-Fi reconnect succeeded after ${i}s"
+      return 0
+    fi
     sleep 1
   done
-  wifi_connected_netplan "$wifi_dev"
+  if wifi_connected_netplan "$wifi_dev"; then
+    log "Primary Wi-Fi reconnect succeeded after ${timeout}s"
+    return 0
+  fi
+  log "Primary Wi-Fi reconnect failed after ${timeout}s"
+  return 1
 }
 
+# reconcile_ap_netplan — called every tick. Once the AP is actually up,
+# AP_MIN_DWELL_SECONDS gates any further reconnect attempt: without this,
+# this function tore the AP down to retry the primary connection on
+# EVERY tick (CHECK_INTERVAL, ~5s), leaving it visible for only the ~5s
+# between ticks and down for the whole ~25s retry window on every single
+# cycle — confirmed live, a phone/laptop couldn't even finish a scan
+# before it vanished again. Now it stays up for a real dwell window
+# before trying the primary network again.
 reconcile_ap_netplan() {
   local wifi_dev="$1"
   local -a fields=()
@@ -510,6 +612,15 @@ reconcile_ap_netplan() {
 
   if wifi_connected_netplan "$wifi_dev" && ! ap_hostapd_active; then
     return  # already fine, nothing to do — the common case, checked cheaply first
+  fi
+
+  if ap_hostapd_active; then
+    local started_at elapsed
+    started_at="$(cat "$AP_STARTED_FILE" 2>/dev/null || echo 0)"
+    elapsed=$(( $(date +%s) - started_at ))
+    if (( elapsed < AP_MIN_DWELL_SECONDS )); then
+      return  # still within the dwell window — stay in AP mode, don't retry yet
+    fi
   fi
 
   if try_reconnect_netplan "$wifi_dev"; then
@@ -572,8 +683,19 @@ write_status_netplan() {
   mkdir -p "$STATUS_DIR"
   local connected="false" conn="" ip="" ap_installed="false" ap_enabled="false" ap_active="false"
 
+  # installed = hostapd binary present (capability), enabled = net_config.json
+  # says it should be on (persisted intent), active = hostapd actually running
+  # right now — three independent facts, not one collapsed into "active".
+  # Collapsing them (an earlier version of this function did) makes the admin
+  # panel report "not installed" for a fully configured, working AP fallback
+  # any time it's correctly NOT currently active, which is the common case.
+  command -v hostapd >/dev/null 2>&1 && ap_installed="true"
+  local -a ap_fields=()
+  mapfile -d '' -t ap_fields < <(read_ap_config)
+  [[ "${ap_fields[0]:-0}" == "1" ]] && ap_enabled="true"
+
   if ap_hostapd_active; then
-    ap_installed="true"; ap_enabled="true"; ap_active="true"
+    ap_active="true"
     conn=""; ip="$AP_IFACE_IP"
   else
     if wifi_connected_netplan "$wifi_dev"; then

@@ -1688,6 +1688,15 @@ def admin_wifi_save():
     if not check_csrf():
         return redirect(url_for("admin_system_page", error=t["err_csrf"]))
 
+    cfg = load_net_config()
+    # Password inputs are type="password" and never pre-filled (same reason
+    # ADMIN_PASSWORD itself has no admin-panel edit UI: don't echo secrets
+    # back into HTML). So a blank submission for an SSID that already has a
+    # saved password must mean "leave it unchanged," not "make it open" —
+    # keyed by SSID (not slot position) so reordering slots doesn't lose a
+    # password.
+    old_by_ssid = {w.get("ssid"): w.get("password", "") for w in cfg.get("wifi", []) if w.get("ssid")}
+
     slots = []
     for i in range(1, MAX_WIFI_SLOTS + 1):
         field_label = t["wifi_slot_label"].format(n=i)
@@ -1699,9 +1708,10 @@ def admin_wifi_save():
             return redirect(url_for("admin_system_page", error=t["err_wifi_password_len"].format(
                 field=field_label, min=MIN_WIFI_PASS_LEN, max=MAX_WIFI_PASS_LEN)))
         if ssid:
+            if not password and ssid in old_by_ssid:
+                password = old_by_ssid[ssid]
             slots.append({"ssid": ssid, "password": password})
 
-    cfg = load_net_config()
     cfg["wifi"] = slots
     save_net_config(cfg)
     return redirect(url_for("admin_system_page", msg=t["wifi_save_started"]))
@@ -1721,13 +1731,21 @@ def admin_ap_save():
     if not ssid:
         return redirect(url_for("admin_system_page", error=t["err_ssid_invalid"].format(field=t["hotspot_ssid_ph"], max=MAX_SSID_LEN)))
     password = validate_wifi_password(request.form.get("ap_password"))
-    # Unlike the client Wi-Fi slots, an AP profile requires WPA2-PSK — an
-    # open hotspot isn't offered, so a blank password is also rejected here.
-    if not password or len(password) < MIN_WIFI_PASS_LEN:
+    if password is None:
         return redirect(url_for("admin_system_page", error=t["err_hotspot_password_len"].format(
             min=MIN_WIFI_PASS_LEN, max=MAX_WIFI_PASS_LEN)))
 
     cfg = load_net_config()
+    # Same never-pre-filled password field as the Wi-Fi client slots above:
+    # a blank submission means "keep the existing hotspot password" (e.g.
+    # editing only the SSID), not "clear it" — a WPA2-PSK profile requires
+    # SOME password, so this only falls through to the length-error below
+    # when there was never a password saved either.
+    if not password:
+        password = (cfg.get("ap_fallback") or {}).get("password") or ""
+    if len(password) < MIN_WIFI_PASS_LEN:
+        return redirect(url_for("admin_system_page", error=t["err_hotspot_password_len"].format(
+            min=MIN_WIFI_PASS_LEN, max=MAX_WIFI_PASS_LEN)))
     cfg["ap_fallback"] = {"enabled": True, "ssid": ssid, "password": password}
     save_net_config(cfg)
     return redirect(url_for("admin_system_page", msg=t["hotspot_saved"]))
