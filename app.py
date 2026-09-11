@@ -166,6 +166,7 @@ MAX_PRICE_VALUE = 1_000_000  # 1e12 — comfortably above any real price, guards
 MAX_SSID_LEN = 32  # 802.11 SSID byte cap, treated as a char cap here (ASCII in practice)
 MIN_WIFI_PASS_LEN = 8
 MAX_WIFI_PASS_LEN = 63  # WPA2-PSK bounds; blank means an open network
+MAX_WIFI_SLOTS = 2
 
 # ISO-4217 currency code -> ISO-3166 country code, for currencies where the
 # "first two letters" heuristic doesn't hold. Extend as needed.
@@ -266,6 +267,11 @@ TRANSLATIONS = {
         "restart_started": "Reboot requested — the board will restart within a few seconds.",
         "err_ssid_invalid": "{field} is invalid or too long (max {max} characters, can't start with '-').",
         "err_wifi_password_len": "{field} must be blank (open network) or {min}-{max} characters.",
+        "system_nav_btn": "System, Network & Updates",
+        "system_heading": "System & Network",
+        "system_sub": "Wi-Fi, hotspot fallback, updates, and board restart.",
+        "back_to_admin": "← Back to dashboard settings",
+        "wifi_prefilled_note": "Showing currently configured network(s) — passwords aren't stored here and must be retyped before saving, or this network will be reconfigured as open.",
     },
     "ar": {
         "panel_title": "لوحة التحكم",
@@ -341,6 +347,11 @@ TRANSLATIONS = {
         "restart_started": "تم طلب إعادة التشغيل — سيُعاد تشغيل الجهاز خلال ثوانٍ قليلة.",
         "err_ssid_invalid": "{field} غير صالح أو طويل جدًا (الحد الأقصى {max} حرفًا، ولا يمكن أن يبدأ بـ '-').",
         "err_wifi_password_len": "يجب أن تكون قيمة {field} فارغة (شبكة مفتوحة) أو بين {min} و{max} حرفًا.",
+        "system_nav_btn": "النظام والشبكة والتحديثات",
+        "system_heading": "النظام والشبكة",
+        "system_sub": "الواي فاي، نقطة الاتصال الاحتياطية، التحديثات، وإعادة تشغيل الجهاز.",
+        "back_to_admin": "← العودة إلى إعدادات لوحة التحكم",
+        "wifi_prefilled_note": "يتم عرض الشبكة (الشبكات) المُهيأة حاليًا — كلمات المرور غير مخزنة هنا ويجب إعادة كتابتها قبل الحفظ، وإلا ستتم إعادة تهيئة هذه الشبكة كشبكة مفتوحة.",
     },
 }
 
@@ -1065,13 +1076,12 @@ setInterval(refresh, 5000);
 </html>
 """
 
-ADMIN_HTML = """
-<!doctype html>
-<html lang="{{ lang }}" dir="{{ 'rtl' if lang == 'ar' else 'ltr' }}">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Control Panel &mdash; Currency Dashboard</title>
+# Shared by ADMIN_HTML and SYSTEM_HTML (plain CSS, no Jinja placeholders,
+# so it's safe to concatenate with `+` into either template string) — the
+# admin panel was split into two pages (dashboard/currency settings vs.
+# system/network/updates) so both need the same look without duplicating
+# this whole block twice.
+ADMIN_STYLE = """
 <style>
   :root {
     --bg-1: #0f172a;
@@ -1153,10 +1163,11 @@ ADMIN_HTML = """
     border: none;
     cursor: pointer;
   }
-  button.save { background: var(--accent); color: #0f172a; }
-  button.save:hover { opacity: 0.9; }
-  button.delete { background: rgba(248,113,113,0.15); border: 1px solid rgba(248,113,113,0.4); color: var(--danger); }
-  button.delete:hover { background: rgba(248,113,113,0.25); }
+  button.save, a.save { background: var(--accent); color: #0f172a; }
+  button.save:hover, a.save:hover { opacity: 0.9; }
+  button.delete, a.delete { background: rgba(248,113,113,0.15); border: 1px solid rgba(248,113,113,0.4); color: var(--danger); }
+  button.delete:hover, a.delete:hover { background: rgba(248,113,113,0.25); }
+  a.save, a.delete { display: inline-block; text-decoration: none; padding: 9px 16px; font-size: 0.9rem; font-weight: 600; border-radius: 10px; }
   .add-card {
     background: var(--card-bg);
     border: 1px dashed var(--card-border);
@@ -1207,6 +1218,15 @@ ADMIN_HTML = """
   }
   a.back:hover { color: var(--text-main); }
 </style>
+"""
+
+ADMIN_HTML = ADMIN_STYLE + """
+<!doctype html>
+<html lang="{{ lang }}" dir="{{ 'rtl' if lang == 'ar' else 'ltr' }}">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Control Panel &mdash; Currency Dashboard</title>
 </head>
 <body>
 <div class="wrap">
@@ -1215,13 +1235,16 @@ ADMIN_HTML = """
       <h1>&#9881; {{ t.panel_title }}</h1>
       <p class="sub" style="margin-bottom:0;">{{ t.panel_sub }}</p>
     </div>
-    <form class="lang-form" method="post" action="{{ url_for('admin_set_language') }}">
-      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-      <select name="admin_language" onchange="this.form.submit()">
-        <option value="en" {% if lang == 'en' %}selected{% endif %}>English</option>
-        <option value="ar" {% if lang == 'ar' %}selected{% endif %}>العربية</option>
-      </select>
-    </form>
+    <div style="display:flex; flex-direction:column; align-items:flex-end; gap:10px;">
+      <form class="lang-form" method="post" action="{{ url_for('admin_set_language') }}">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <select name="admin_language" onchange="this.form.submit()">
+          <option value="en" {% if lang == 'en' %}selected{% endif %}>English</option>
+          <option value="ar" {% if lang == 'ar' %}selected{% endif %}>العربية</option>
+        </select>
+      </form>
+      <a class="save" href="{{ url_for('admin_system_page') }}">&#9881; {{ t.system_nav_btn }}</a>
+    </div>
   </div>
 
   {% if msg %}<div class="msg ok">{{ msg }}</div>{% endif %}
@@ -1233,25 +1256,6 @@ ADMIN_HTML = """
   {% for c in currencies %}
   <form id="delete-{{ c.code }}" method="post" action="{{ url_for('admin_delete_currency', code=c.code) }}"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"></form>
   {% endfor %}
-
-  <!-- Same standalone-form pattern as the per-currency delete forms above:
-       "Check for updates now" is a distinct action from saving settings,
-       so it submits its own tiny form via the button's form="..."
-       attribute rather than nesting inside the big save-all form. -->
-  <form id="check-update-now" method="post" action="{{ url_for('admin_check_update_now') }}"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"></form>
-
-  <!-- Wi-Fi / hotspot-fallback / restart: none of these run anything
-       privileged directly — each just writes desired state that a
-       separate root-run daemon polls and applies (see NET_CONFIG_FILE's
-       comment in app.py). Standalone forms (csrf token only) so their
-       visible fields/buttons can live inside settings-cards below,
-       associated purely via each input's form="..." attribute, without
-       nesting inside the big save-all form — same pattern as the
-       per-currency delete forms above. -->
-  <form id="wifi-save" method="post" action="{{ url_for('admin_wifi_save') }}"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"></form>
-  <form id="ap-save" method="post" action="{{ url_for('admin_ap_save') }}"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"></form>
-  <form id="ap-disable" method="post" action="{{ url_for('admin_ap_disable') }}"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"></form>
-  <form id="restart-board" method="post" action="{{ url_for('admin_reboot') }}"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"></form>
 
   <form method="post" action="{{ url_for('admin_save_all') }}">
     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
@@ -1267,71 +1271,6 @@ ADMIN_HTML = """
           <input type="text" id="subtitle" name="subtitle" value="{{ settings.subtitle }}" maxlength="{{ max_subtitle_len }}">
         </div>
         <label class="chk"><input type="checkbox" name="show_updated_at" {% if settings.show_updated_at %}checked{% endif %}> {{ t.show_updated_label }}</label>
-      </div>
-    </div>
-
-    <div class="settings-card">
-      <h2>{{ t.updates_heading }}</h2>
-      <div class="fields">
-        <div style="color:var(--text-dim); font-size:0.9rem;">
-          {{ t.version_label }}: <strong style="color:var(--text-main);">{{ app_version }}</strong>{% if app_commit %} <span style="opacity:0.7;">({{ app_commit }})</span>{% endif %}
-        </div>
-        <label class="chk"><input type="checkbox" name="auto_update_enabled" {% if auto_update_enabled %}checked{% endif %}> {{ t.auto_update_label }}</label>
-        <button type="submit" form="check-update-now" class="save">{{ t.check_now_btn }}</button>
-      </div>
-    </div>
-
-    <div class="settings-card">
-      <h2>{{ t.network_heading }}</h2>
-      <div class="fields">
-        <div style="color:var(--text-dim); font-size:0.9rem; width:100%;">
-          {{ t.wifi_status_label }}:
-          {% if net_status.available %}
-            <strong style="color:var(--text-main);">{% if net_status.connected %}{{ t.wifi_connected_fmt.format(ssid=net_status.ssid or '?', ip=net_status.ip or '?') }}{% else %}{{ t.wifi_not_connected }}{% endif %}</strong>
-          {% else %}
-            <span style="opacity:0.7;">{{ t.wifi_unavailable }}</span>
-          {% endif %}
-        </div>
-        {% for slot in wifi_slots %}
-        <div>
-          <label class="field-label">{{ t.wifi_slot_label.format(n=loop.index) }}</label>
-          <input type="text" name="wifi_ssid_{{ loop.index }}" form="wifi-save" value="{{ slot.ssid or '' }}" placeholder="{{ t.wifi_ssid_ph }}" maxlength="{{ max_ssid_len }}">
-          <input type="password" name="wifi_password_{{ loop.index }}" form="wifi-save" placeholder="{{ t.wifi_password_ph }}" autocomplete="off">
-        </div>
-        {% endfor %}
-        <div style="color:var(--text-dim); font-size:0.85rem; width:100%;">{{ t.wifi_password_note }}</div>
-        <button type="submit" form="wifi-save" class="save">{{ t.wifi_save_btn }}</button>
-      </div>
-    </div>
-
-    <div class="settings-card">
-      <h2>{{ t.hotspot_heading }}</h2>
-      <div class="fields">
-        <div style="color:var(--text-dim); font-size:0.9rem; width:100%;">
-          {% if not net_status.available %}
-            <span style="opacity:0.7;">{{ t.wifi_unavailable }}</span>
-          {% elif net_status.ap_active %}
-            <strong style="color:var(--text-main);">{{ t.hotspot_active }}</strong>
-          {% elif net_status.ap_installed %}
-            {{ t.hotspot_installed_inactive }}
-          {% else %}
-            {{ t.hotspot_not_installed }}
-          {% endif %}
-        </div>
-        <input type="text" name="ap_ssid" form="ap-save" value="{{ ap_fallback.ssid or '' }}" placeholder="{{ t.hotspot_ssid_ph }}" maxlength="{{ max_ssid_len }}">
-        <input type="password" name="ap_password" form="ap-save" placeholder="{{ t.hotspot_password_ph }}" autocomplete="off">
-        <button type="submit" form="ap-save" class="save">{{ t.hotspot_save_btn }}</button>
-        {% if ap_fallback.enabled %}
-        <button type="submit" form="ap-disable" class="delete" onclick="return confirm('{{ t.hotspot_disable_confirm }}');">{{ t.hotspot_disable_btn }}</button>
-        {% endif %}
-      </div>
-    </div>
-
-    <div class="settings-card">
-      <h2>{{ t.restart_heading }}</h2>
-      <div class="fields">
-        <button type="submit" form="restart-board" class="delete" onclick="return confirm('{{ t.restart_confirm }}');" {% if not net_status.available %}disabled{% endif %}>{{ t.restart_btn }}</button>
-        {% if not net_status.available %}<span style="color:var(--text-dim); font-size:0.85rem;">{{ t.wifi_unavailable }}</span>{% endif %}
       </div>
     </div>
 
@@ -1388,6 +1327,125 @@ function filterDecimalInput(el) {
 </html>
 """
 
+# Split out of ADMIN_HTML on request: the dashboard/currency admin page was
+# getting crowded with system-level concerns (Wi-Fi, hotspot fallback,
+# updates, reboot) that have nothing to do with prices/currencies and carry
+# a different risk profile (can drop the admin's own connection, restart
+# the board). Reachable from ADMIN_HTML via the "System, Network & Updates"
+# link in its top-bar; links back to admin_page in turn.
+SYSTEM_HTML = ADMIN_STYLE + """
+<!doctype html>
+<html lang="{{ lang }}" dir="{{ 'rtl' if lang == 'ar' else 'ltr' }}">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>System &amp; Network &mdash; Currency Dashboard</title>
+</head>
+<body>
+<div class="wrap">
+  <div class="top-bar">
+    <div>
+      <h1>&#9881; {{ t.system_heading }}</h1>
+      <p class="sub" style="margin-bottom:0;">{{ t.system_sub }}</p>
+    </div>
+    <form class="lang-form" method="post" action="{{ url_for('admin_set_language') }}">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <select name="admin_language" onchange="this.form.submit()">
+        <option value="en" {% if lang == 'en' %}selected{% endif %}>English</option>
+        <option value="ar" {% if lang == 'ar' %}selected{% endif %}>العربية</option>
+      </select>
+    </form>
+  </div>
+
+  {% if msg %}<div class="msg ok">{{ msg }}</div>{% endif %}
+  {% if error %}<div class="msg err">{{ error }}</div>{% endif %}
+
+  <!-- None of these run anything privileged directly — each just writes
+       desired state that a separate root-run daemon polls and applies
+       (see NET_CONFIG_FILE's comment in app.py). Standalone forms (csrf
+       token only, plus auto-update-toggle's checkbox) so their visible
+       fields/buttons can live inside the settings-cards below, associated
+       purely via each input's form="..." attribute, without nesting one
+       form inside another. -->
+  <form id="auto-update-toggle" method="post" action="{{ url_for('admin_toggle_auto_update') }}"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"></form>
+  <form id="check-update-now" method="post" action="{{ url_for('admin_check_update_now') }}"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"></form>
+  <form id="wifi-save" method="post" action="{{ url_for('admin_wifi_save') }}"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"></form>
+  <form id="ap-save" method="post" action="{{ url_for('admin_ap_save') }}"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"></form>
+  <form id="ap-disable" method="post" action="{{ url_for('admin_ap_disable') }}"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"></form>
+  <form id="restart-board" method="post" action="{{ url_for('admin_reboot') }}"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"></form>
+
+  <div class="settings-card">
+    <h2>{{ t.updates_heading }}</h2>
+    <div class="fields">
+      <div style="color:var(--text-dim); font-size:0.9rem;">
+        {{ t.version_label }}: <strong style="color:var(--text-main);">{{ app_version }}</strong>{% if app_commit %} <span style="opacity:0.7;">({{ app_commit }})</span>{% endif %}
+      </div>
+      <label class="chk"><input type="checkbox" name="auto_update_enabled" form="auto-update-toggle" onchange="this.form.submit()" {% if auto_update_enabled %}checked{% endif %}> {{ t.auto_update_label }}</label>
+      <button type="submit" form="check-update-now" class="save">{{ t.check_now_btn }}</button>
+    </div>
+  </div>
+
+  <div class="settings-card">
+    <h2>{{ t.network_heading }}</h2>
+    <div class="fields">
+      <div style="color:var(--text-dim); font-size:0.9rem; width:100%;">
+        {{ t.wifi_status_label }}:
+        {% if net_status.available %}
+          <strong style="color:var(--text-main);">{% if net_status.connected %}{{ t.wifi_connected_fmt.format(ssid=net_status.ssid or '?', ip=net_status.ip or '?') }}{% else %}{{ t.wifi_not_connected }}{% endif %}</strong>
+        {% else %}
+          <span style="opacity:0.7;">{{ t.wifi_unavailable }}</span>
+        {% endif %}
+      </div>
+      {% for slot in wifi_slots %}
+      <div>
+        <label class="field-label">{{ t.wifi_slot_label.format(n=loop.index) }}</label>
+        <input type="text" name="wifi_ssid_{{ loop.index }}" form="wifi-save" value="{{ slot.ssid or '' }}" placeholder="{{ t.wifi_ssid_ph }}" maxlength="{{ max_ssid_len }}">
+        <input type="password" name="wifi_password_{{ loop.index }}" form="wifi-save" placeholder="{{ t.wifi_password_ph }}" autocomplete="off">
+      </div>
+      {% endfor %}
+      {% if wifi_prefilled %}<div style="color:var(--text-dim); font-size:0.85rem; width:100%;">{{ t.wifi_prefilled_note }}</div>{% endif %}
+      <div style="color:var(--text-dim); font-size:0.85rem; width:100%;">{{ t.wifi_password_note }}</div>
+      <button type="submit" form="wifi-save" class="save">{{ t.wifi_save_btn }}</button>
+    </div>
+  </div>
+
+  <div class="settings-card">
+    <h2>{{ t.hotspot_heading }}</h2>
+    <div class="fields">
+      <div style="color:var(--text-dim); font-size:0.9rem; width:100%;">
+        {% if not net_status.available %}
+          <span style="opacity:0.7;">{{ t.wifi_unavailable }}</span>
+        {% elif net_status.ap_active %}
+          <strong style="color:var(--text-main);">{{ t.hotspot_active }}</strong>
+        {% elif net_status.ap_installed %}
+          {{ t.hotspot_installed_inactive }}
+        {% else %}
+          {{ t.hotspot_not_installed }}
+        {% endif %}
+      </div>
+      <input type="text" name="ap_ssid" form="ap-save" value="{{ ap_fallback.ssid or '' }}" placeholder="{{ t.hotspot_ssid_ph }}" maxlength="{{ max_ssid_len }}">
+      <input type="password" name="ap_password" form="ap-save" placeholder="{{ t.hotspot_password_ph }}" autocomplete="off">
+      <button type="submit" form="ap-save" class="save">{{ t.hotspot_save_btn }}</button>
+      {% if ap_fallback.enabled %}
+      <button type="submit" form="ap-disable" class="delete" onclick="return confirm('{{ t.hotspot_disable_confirm }}');">{{ t.hotspot_disable_btn }}</button>
+      {% endif %}
+    </div>
+  </div>
+
+  <div class="settings-card">
+    <h2>{{ t.restart_heading }}</h2>
+    <div class="fields">
+      <button type="submit" form="restart-board" class="delete" onclick="return confirm('{{ t.restart_confirm }}');" {% if not net_status.available %}disabled{% endif %}>{{ t.restart_btn }}</button>
+      {% if not net_status.available %}<span style="color:var(--text-dim); font-size:0.85rem;">{{ t.wifi_unavailable }}</span>{% endif %}
+    </div>
+  </div>
+
+  <a class="back" href="{{ url_for('admin_page') }}">{{ t.back_to_admin }}</a>
+</div>
+</body>
+</html>
+"""
+
 
 # --------------------------------------------------------------------------
 # Routes
@@ -1418,14 +1476,14 @@ def api_data():
 
 @app.route("/admin", methods=["GET"])
 def admin_page():
+    # Dashboard title/subtitle + currency management only — system-level
+    # concerns (Wi-Fi, hotspot fallback, updates, reboot) live on
+    # admin_system_page(), reachable via the link in this page's top-bar.
     unauthorized = require_admin_auth()
     if unauthorized:
         return unauthorized
     data = load_data()
     lang, t = get_translations(data)
-    net_config = load_net_config()
-    wifi_slots = (net_config.get("wifi") or [])[:3]
-    wifi_slots = wifi_slots + [{}] * (3 - len(wifi_slots))
     return render_template_string(
         ADMIN_HTML,
         currencies=data["currencies"],
@@ -1440,14 +1498,49 @@ def admin_page():
         max_symbol_len=MAX_SYMBOL_LEN,
         max_code_len=MAX_CODE_LEN,
         max_price_value=MAX_PRICE_VALUE,
+        csrf_token=csrf_token(),
+    )
+
+
+@app.route("/admin/system", methods=["GET"])
+def admin_system_page():
+    unauthorized = require_admin_auth()
+    if unauthorized:
+        return unauthorized
+    data = load_data()
+    lang, t = get_translations(data)
+    net_config = load_net_config()
+    net_status = _read_net_status()
+    wifi_slots = (net_config.get("wifi") or [])[:MAX_WIFI_SLOTS]
+    # If no Wi-Fi profile has ever been saved through this panel, show
+    # whatever the device is ALREADY configured with (e.g. from
+    # provision-pi.sh's initial setup, or nmcli by hand) instead of blank
+    # fields — discovered from the daemon's status file, SSID only (a
+    # saved WPA2 secret can't be read back without privilege, which this
+    # app deliberately never has). Purely a display convenience: nothing
+    # is written to net_config.json until the admin actually hits Save.
+    wifi_prefilled = False
+    if not wifi_slots:
+        known = (net_status.get("known_ssids") or [])[:MAX_WIFI_SLOTS]
+        if known:
+            wifi_slots = [{"ssid": s} for s in known]
+            wifi_prefilled = True
+    wifi_slots = wifi_slots + [{}] * (MAX_WIFI_SLOTS - len(wifi_slots))
+    return render_template_string(
+        SYSTEM_HTML,
+        lang=lang,
+        t=t,
+        msg=request.args.get("msg"),
+        error=request.args.get("error"),
         max_ssid_len=MAX_SSID_LEN,
         csrf_token=csrf_token(),
         app_version=APP_VERSION,
         app_commit=APP_COMMIT,
         auto_update_enabled=os.path.isfile(AUTO_UPDATE_ENABLED_FLAG),
         wifi_slots=wifi_slots,
+        wifi_prefilled=wifi_prefilled,
         ap_fallback=net_config.get("ap_fallback") or {},
-        net_status=_read_net_status(),
+        net_status=net_status,
     )
 
 
@@ -1522,10 +1615,25 @@ def admin_save_all():
     data["settings"]["subtitle"] = subtitle
     data["settings"]["show_updated_at"] = "show_updated_at" in request.form
 
-    # Auto-update enabled/disabled is a flag FILE, not a data.json field —
-    # scripts/auto-update.sh checks for this file's existence directly (see
-    # its own comments), so this is the one place that file gets
-    # created/removed.
+    save_data(data)
+    return redirect(url_for("admin_page", msg=t["settings_saved"]))
+
+
+@app.route("/admin/toggle-auto-update", methods=["POST"])
+def admin_toggle_auto_update():
+    # Split out of admin_save_all() when the Updates card moved to
+    # admin_system_page() — auto-update enabled/disabled is a flag FILE,
+    # not a data.json field (scripts/auto-update.sh checks for this file's
+    # existence directly, see its own comments), so this is the one place
+    # that file gets created/removed. Auto-submits on checkbox change
+    # (same pattern as the language selector), no separate save button.
+    unauthorized = require_admin_auth()
+    if unauthorized:
+        return unauthorized
+    data = load_data()
+    _, t = get_translations(data)
+    if not check_csrf():
+        return redirect(url_for("admin_system_page", error=t["err_csrf"]))
     if "auto_update_enabled" in request.form:
         open(AUTO_UPDATE_ENABLED_FLAG, "a", encoding="utf-8").close()
     else:
@@ -1533,9 +1641,7 @@ def admin_save_all():
             os.remove(AUTO_UPDATE_ENABLED_FLAG)
         except FileNotFoundError:
             pass
-
-    save_data(data)
-    return redirect(url_for("admin_page", msg=t["settings_saved"]))
+    return redirect(url_for("admin_system_page"))
 
 
 @app.route("/admin/check-update-now", methods=["POST"])
@@ -1546,7 +1652,7 @@ def admin_check_update_now():
     data = load_data()
     _, t = get_translations(data)
     if not check_csrf():
-        return redirect(url_for("admin_page", error=t["err_csrf"]))
+        return redirect(url_for("admin_system_page", error=t["err_csrf"]))
 
     # Touching this flag makes auto-update.sh run its check unconditionally
     # on its next invocation, regardless of the enabled flag, and delete
@@ -1564,7 +1670,7 @@ def admin_check_update_now():
     except OSError:
         pass  # the flag file alone still guarantees a check on the next scheduled tick
 
-    return redirect(url_for("admin_page", msg=t["check_now_started"]))
+    return redirect(url_for("admin_system_page", msg=t["check_now_started"]))
 
 
 @app.route("/admin/wifi/save", methods=["POST"])
@@ -1580,17 +1686,17 @@ def admin_wifi_save():
     data = load_data()
     _, t = get_translations(data)
     if not check_csrf():
-        return redirect(url_for("admin_page", error=t["err_csrf"]))
+        return redirect(url_for("admin_system_page", error=t["err_csrf"]))
 
     slots = []
-    for i in range(1, 4):
+    for i in range(1, MAX_WIFI_SLOTS + 1):
         field_label = t["wifi_slot_label"].format(n=i)
         ssid = clean_ssid(request.form.get(f"wifi_ssid_{i}"))
         if ssid is None:
-            return redirect(url_for("admin_page", error=t["err_ssid_invalid"].format(field=field_label, max=MAX_SSID_LEN)))
+            return redirect(url_for("admin_system_page", error=t["err_ssid_invalid"].format(field=field_label, max=MAX_SSID_LEN)))
         password = validate_wifi_password(request.form.get(f"wifi_password_{i}"))
         if password is None:
-            return redirect(url_for("admin_page", error=t["err_wifi_password_len"].format(
+            return redirect(url_for("admin_system_page", error=t["err_wifi_password_len"].format(
                 field=field_label, min=MIN_WIFI_PASS_LEN, max=MAX_WIFI_PASS_LEN)))
         if ssid:
             slots.append({"ssid": ssid, "password": password})
@@ -1598,7 +1704,7 @@ def admin_wifi_save():
     cfg = load_net_config()
     cfg["wifi"] = slots
     save_net_config(cfg)
-    return redirect(url_for("admin_page", msg=t["wifi_save_started"]))
+    return redirect(url_for("admin_system_page", msg=t["wifi_save_started"]))
 
 
 @app.route("/admin/ap/save", methods=["POST"])
@@ -1609,22 +1715,22 @@ def admin_ap_save():
     data = load_data()
     _, t = get_translations(data)
     if not check_csrf():
-        return redirect(url_for("admin_page", error=t["err_csrf"]))
+        return redirect(url_for("admin_system_page", error=t["err_csrf"]))
 
     ssid = clean_ssid(request.form.get("ap_ssid"))
     if not ssid:
-        return redirect(url_for("admin_page", error=t["err_ssid_invalid"].format(field=t["hotspot_ssid_ph"], max=MAX_SSID_LEN)))
+        return redirect(url_for("admin_system_page", error=t["err_ssid_invalid"].format(field=t["hotspot_ssid_ph"], max=MAX_SSID_LEN)))
     password = validate_wifi_password(request.form.get("ap_password"))
     # Unlike the client Wi-Fi slots, an AP profile requires WPA2-PSK — an
     # open hotspot isn't offered, so a blank password is also rejected here.
     if not password or len(password) < MIN_WIFI_PASS_LEN:
-        return redirect(url_for("admin_page", error=t["err_hotspot_password_len"].format(
+        return redirect(url_for("admin_system_page", error=t["err_hotspot_password_len"].format(
             min=MIN_WIFI_PASS_LEN, max=MAX_WIFI_PASS_LEN)))
 
     cfg = load_net_config()
     cfg["ap_fallback"] = {"enabled": True, "ssid": ssid, "password": password}
     save_net_config(cfg)
-    return redirect(url_for("admin_page", msg=t["hotspot_saved"]))
+    return redirect(url_for("admin_system_page", msg=t["hotspot_saved"]))
 
 
 @app.route("/admin/ap/disable", methods=["POST"])
@@ -1635,14 +1741,14 @@ def admin_ap_disable():
     data = load_data()
     _, t = get_translations(data)
     if not check_csrf():
-        return redirect(url_for("admin_page", error=t["err_csrf"]))
+        return redirect(url_for("admin_system_page", error=t["err_csrf"]))
 
     cfg = load_net_config()
     ap = cfg.get("ap_fallback") or {}
     ap["enabled"] = False
     cfg["ap_fallback"] = ap
     save_net_config(cfg)
-    return redirect(url_for("admin_page", msg=t["hotspot_disabled"]))
+    return redirect(url_for("admin_system_page", msg=t["hotspot_disabled"]))
 
 
 @app.route("/admin/reboot", methods=["POST"])
@@ -1653,14 +1759,14 @@ def admin_reboot():
     data = load_data()
     _, t = get_translations(data)
     if not check_csrf():
-        return redirect(url_for("admin_page", error=t["err_csrf"]))
+        return redirect(url_for("admin_system_page", error=t["err_csrf"]))
 
     # Touch-file idiom, same as AUTO_UPDATE_CHECK_NOW_FLAG: the root-run
     # dashboard-net-apply daemon checks for this file every ~5s and, if
     # present, removes it and calls `systemctl reboot` itself. Nothing here
     # runs as root or calls systemctl directly.
     open(REBOOT_REQUEST_FLAG, "a", encoding="utf-8").close()
-    return redirect(url_for("admin_page", msg=t["restart_started"]))
+    return redirect(url_for("admin_system_page", msg=t["restart_started"]))
 
 
 @app.route("/admin/currency/<code>/delete", methods=["POST"])

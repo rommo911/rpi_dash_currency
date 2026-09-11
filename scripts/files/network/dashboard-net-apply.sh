@@ -41,7 +41,7 @@ reconcile_reboot() {
   fi
 }
 
-# Emits NUL-separated "ssid\0password\0" pairs for up to 3 configured Wi-Fi
+# Emits NUL-separated "ssid\0password\0" pairs for up to 2 configured Wi-Fi
 # slots. NUL-separated (not newline/pipe-delimited) so an SSID or password
 # containing any other byte still round-trips correctly into bash.
 read_wifi_slots() {
@@ -53,7 +53,7 @@ try:
         cfg = json.load(f)
 except Exception:
     cfg = {}
-for slot in (cfg.get("wifi") or [])[:3]:
+for slot in (cfg.get("wifi") or [])[:2]:
     ssid = (slot.get("ssid") or "").strip()
     if not ssid:
         continue
@@ -79,6 +79,15 @@ PYEOF
 
 json_string() {
   python3 -c 'import json,sys; print(json.dumps(sys.argv[1]))' "$1"
+}
+
+# JSON-encodes one SSID name per line of stdin into a JSON array — used to
+# report currently-saved Wi-Fi connection profiles to the admin panel (see
+# known_ssids in write_status()) so it can show/prefill what's ALREADY
+# configured on this box (e.g. from provision-pi.sh's initial setup)
+# instead of blank fields the first time net_config.json doesn't exist yet.
+json_string_array() {
+  python3 -c 'import json,sys; print(json.dumps([l for l in sys.stdin.read().splitlines() if l]))'
 }
 
 # reconcile_wifi — idempotent delete-then-recreate per slot (same shape as
@@ -202,11 +211,21 @@ write_status() {
   systemctl is-enabled wifi-ap-fallback.service >/dev/null 2>&1 && ap_enabled="true"
   nmcli -t -f NAME connection show --active 2>/dev/null | grep -Fxq "Emergency-AP" && ap_active="true"
 
+  # All saved Wi-Fi client profiles (not just the active one), excluding
+  # the Emergency-AP itself — reported so the admin panel can show/prefill
+  # networks that are already configured on this box even before
+  # net_config.json has ever been saved through it (e.g. provision-pi.sh's
+  # initial "dashboard" SSID, or one set up by hand with nmcli/raspi-config).
+  known_ssids_json="$(nmcli -t -f NAME,TYPE connection show 2>/dev/null \
+    | awk -F: '$2=="802-11-wireless" && $1!="Emergency-AP"{print $1}' \
+    | json_string_array)"
+
   cat > "$STATUS_FILE.tmp" <<EOF
 {
   "connected": $( [[ "$state" == "100" ]] && echo true || echo false ),
   "ssid": $(json_string "$conn"),
   "ip": $(json_string "$ip"),
+  "known_ssids": $known_ssids_json,
   "ap_installed": $ap_installed,
   "ap_enabled": $ap_enabled,
   "ap_active": $ap_active,
