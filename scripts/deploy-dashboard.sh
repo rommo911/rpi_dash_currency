@@ -278,6 +278,26 @@ render_template "$FILES_DIR/systemd/dashboard-net-apply.service" \
 sudo systemctl daemon-reload
 sudo systemctl enable --now dashboard-net-apply
 
+# On any image WITHOUT NetworkManager (confirmed live on Armbian/Orange Pi,
+# which uses netplan + systemd-networkd + wpa_supplicant instead), the
+# daemon above falls back to a netplan-based Wi-Fi backend and drives
+# hostapd/dnsmasq directly for the emergency-AP fallback — see that
+# script's own header comment for the full design. Those two packages
+# (plus `iw`, used only to read the currently-associated SSID for the
+# admin panel) are only needed on that fallback path; a NetworkManager
+# image (Raspberry Pi OS Bookworm+) never touches them. Disabling their
+# own persistent services immediately after install is deliberate: this
+# daemon always runs them as its own transient `systemd-run` units
+# on demand, never the shared hostapd.service/dnsmasq.service default
+# configs, so those must never be left enabled to auto-start at boot
+# against an empty/absent config.
+if ! command -v nmcli >/dev/null 2>&1; then
+  log "No NetworkManager detected — installing netplan-backend Wi-Fi fallback dependencies (hostapd, dnsmasq, iw)"
+  sudo apt-get install -y hostapd dnsmasq iw || \
+    warn "Failed to install hostapd/dnsmasq/iw — the emergency Wi-Fi hotspot fallback won't work until this is resolved (Wi-Fi client networking is unaffected)."
+  sudo systemctl disable --now hostapd dnsmasq >/dev/null 2>&1 || true
+fi
+
 log "Waiting for the dashboard to respond on port ${APP_PORT}"
 for _ in $(seq 1 30); do
   if curl -s "http://localhost:${APP_PORT}/" >/dev/null; then
