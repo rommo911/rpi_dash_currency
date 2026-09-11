@@ -1,0 +1,8 @@
+[Unit]
+Description=Currency Dashboard Post-Boot Health Check
+After=network-online.target {{SERVICE_NAME}}.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart={{SCRIPT_PATH}}

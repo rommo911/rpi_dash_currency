@@ -73,7 +73,7 @@ if ! is_headless; then
   fi
 fi
 
-log "1/12 Installing system dependencies"
+log "1/13 Installing system dependencies"
 sudo apt update
 sudo apt install -y git python3-venv python3-pip curl openssl
 
@@ -89,7 +89,7 @@ else
   fi
 fi
 
-log "2/12 Cloning/updating repository into $INSTALL_DIR"
+log "2/13 Cloning/updating repository into $INSTALL_DIR"
 if [[ -d "$INSTALL_DIR/.git" ]]; then
   # A checkout from before data.json/config.py were gitignored may still
   # have them TRACKED with local (real, live) modifications — untrack
@@ -115,7 +115,7 @@ FILES_DIR="$INSTALL_DIR/scripts/files"
 # shellcheck disable=SC1091
 source "$INSTALL_DIR/scripts/lib.sh"
 
-log "3/12 Setting up local config (data.json, .env, auto-update.conf)"
+log "3/13 Setting up local config (data.json, .env, auto-update.conf)"
 # These files are gitignored and never committed as themselves — copied
 # from their tracked templates only if missing, so a later `git reset --hard`
 # (see scripts/auto-update.sh) can never touch live prices, the real admin
@@ -183,16 +183,16 @@ PYEOF
   fi
 fi
 
-log "4/12 Creating virtualenv and installing Python deps"
+log "4/13 Creating virtualenv and installing Python deps"
 python3 -m venv "$INSTALL_DIR/.venv"
 "$INSTALL_DIR/.venv/bin/pip" install --upgrade pip
 "$INSTALL_DIR/.venv/bin/pip" install -r "$INSTALL_DIR/requirements.txt"
 
-log "5/12 Generating/renewing the self-signed HTTPS certificate"
+log "5/13 Generating/renewing the self-signed HTTPS certificate"
 INSTALL_DIR="$INSTALL_DIR" bash "$INSTALL_DIR/scripts/generate-cert.sh" || \
   warn "Certificate generation failed — the admin panel will fall back to HTTP only until this is fixed."
 
-log "6/12 Installing systemd service"
+log "6/13 Installing systemd service"
 render_template "$FILES_DIR/systemd/currency-dashboard.service" \
   "/etc/systemd/system/${SERVICE_NAME}.service" \
   "INSTALL_DIR=$INSTALL_DIR" "APP_PORT=$APP_PORT" "HTTPS_PORT=$HTTPS_PORT" "RUN_USER=$USER"
@@ -200,7 +200,7 @@ render_template "$FILES_DIR/systemd/currency-dashboard.service" \
 sudo systemctl daemon-reload
 sudo systemctl enable --now "${SERVICE_NAME}"
 
-log "7/12 Firewall: opening the HTTPS admin port"
+log "7/13 Firewall: opening the HTTPS admin port"
 # Deliberately NOT gated on "is ufw active right now" — that check raced
 # harden-system.sh's own `ufw --force enable` a moment earlier on at
 # least one real deploy (ufw reported inactive at this exact instant, so
@@ -220,7 +220,7 @@ else
   log "ufw not installed — skipping (nothing to open)"
 fi
 
-log "8/12 Installing the auto-updater (git pull + cert renewal every 6h)"
+log "8/13 Installing the auto-updater (git pull + cert renewal every 6h)"
 SYSTEMCTL_BIN="$(command -v systemctl)"
 SUDOERS_FILE="/etc/sudoers.d/${SERVICE_NAME}-updater"
 # Rendered to a LOCAL temp file first (not straight to /etc/sudoers.d)
@@ -248,7 +248,7 @@ render_template "$FILES_DIR/systemd/currency-dashboard-updater.timer" \
 sudo systemctl daemon-reload
 sudo systemctl enable --now "${SERVICE_NAME}-updater.timer"
 
-log "9/12 Securing the admin panel: fail2ban jail for repeated failed logins"
+log "9/13 Securing the admin panel: fail2ban jail for repeated failed logins"
 if command -v fail2ban-client >/dev/null 2>&1; then
   render_template "$FILES_DIR/fail2ban/currency-dashboard.filter" \
     "/etc/fail2ban/filter.d/${SERVICE_NAME}.conf"
@@ -260,7 +260,7 @@ else
   log "fail2ban not installed (run provision-pi.sh/harden-system.sh first for full hardening) — skipping the admin-login jail"
 fi
 
-log "10/12 Installing the network/reboot reconciler (Wi-Fi + hotspot fallback + reboot from the admin panel)"
+log "10/13 Installing the network/reboot reconciler (Wi-Fi + hotspot fallback + reboot from the admin panel)"
 # The Flask app itself never holds sudo/root for this feature — it only
 # ever writes plain files into its own workspace (net_config.json,
 # reboot.request). This root-run daemon (no User= in the unit, same as
@@ -285,6 +285,27 @@ for _ in $(seq 1 30); do
   fi
   sleep 1
 done
+
+log "11/13 Installing the post-boot health check (auto-rollback on a bad boot)"
+# Runs once, ~2 minutes after every boot: if the service is active and
+# /api/data returns valid JSON, it records the current commit as
+# "last-known-good" (a git tag) and backs up the small gitignored runtime
+# files. If not, it rolls back to that tag/backup once and restarts —
+# see scripts/files/health/dashboard-health-check.sh's header comment for
+# the full design. Guards against exactly the failure mode of a corrupted
+# checkout (e.g. from a power loss mid-write) leaving a Pi stuck unbootable
+# with no display attached to debug it from.
+HEALTH_SCRIPT_PATH="/usr/local/sbin/dashboard-health-check"
+render_template "$FILES_DIR/health/dashboard-health-check.sh" "$HEALTH_SCRIPT_PATH" \
+  "INSTALL_DIR=$INSTALL_DIR" "RUN_USER=$USER" "SERVICE_NAME=$SERVICE_NAME" "APP_PORT=$APP_PORT"
+sudo chmod 755 "$HEALTH_SCRIPT_PATH"
+render_template "$FILES_DIR/systemd/dashboard-health-check.service" \
+  "/etc/systemd/system/dashboard-health-check.service" \
+  "SCRIPT_PATH=$HEALTH_SCRIPT_PATH" "SERVICE_NAME=$SERVICE_NAME"
+render_template "$FILES_DIR/systemd/dashboard-health-check.timer" \
+  "/etc/systemd/system/dashboard-health-check.timer"
+sudo systemctl daemon-reload
+sudo systemctl enable --now dashboard-health-check.timer
 
 # config.txt/cmdline.txt are OS-owned firmware files that also carry a lot
 # of Pi-model-specific content we must never touch — ensure_block_in_file
@@ -402,14 +423,29 @@ reduce_network_wait_online_delay() {
 reduce_network_wait_online_delay
 
 if is_headless; then
-  log "10/11 Skipping kiosk setup (headless)"
+  log "12/13 Skipping kiosk setup (headless)"
   echo "This board has no display configured — access the dashboard from"
   echo "another device's browser instead: http://$(hostname -I 2>/dev/null | awk '{print $1}'):${APP_PORT}/"
 else
 
-log "11/12 Configuring kiosk autostart"
+log "12/13 Configuring kiosk autostart"
 configure_boot_files
-KIOSK_CMD="$CHROMIUM_BIN --kiosk --incognito --noerrant --disable-infobars --disable-session-crashed-bubble --check-for-update-interval=31536000 http://localhost:${APP_PORT}"
+# Wrapped in `sh -c '...; exec chromium ...'` rather than the bare
+# chromium invocation: Chromium leaves SingletonLock/SingletonSocket/
+# SingletonCookie symlinks in its profile dir (~/.config/chromium) while
+# running, and only cleans them up on a graceful exit. A reboot, power
+# loss, or `disable-kiosk.sh` killing the process all skip that cleanup,
+# so the NEXT launch finds a stale lock pointing at a PID that no longer
+# exists and refuses to start — Chromium pops an "Unlock Profile and
+# Relaunch" dialog instead of the dashboard, and kiosk mode is stuck
+# until someone manually deletes those files. This was hit live on a
+# real deploy. Since this kiosk only ever runs one Chromium instance per
+# X session (fresh tty1 login -> single exec chain), any lock file found
+# at launch time is by definition stale, not a real concurrent instance
+# — safe to unconditionally clear before every launch. `exec` inside the
+# wrapper keeps chromium as the final foreground process either way (see
+# the .xinitrc note above about never backgrounding the last command).
+KIOSK_CMD="sh -c 'rm -f \"\$HOME/.config/chromium/SingletonLock\" \"\$HOME/.config/chromium/SingletonSocket\" \"\$HOME/.config/chromium/SingletonCookie\" 2>/dev/null; exec $CHROMIUM_BIN --kiosk --incognito --noerrant --disable-infobars --disable-session-crashed-bubble --check-for-update-interval=31536000 http://localhost:${APP_PORT}'"
 
 setup_labwc() {
   # labwc doesn't blank/DPMS the screen by default on Pi OS Bookworm, so no
@@ -563,7 +599,7 @@ esac
 
 fi  # is_headless
 
-log "12/12 Done"
+log "13/13 Done"
 echo "Dashboard service:   sudo systemctl status ${SERVICE_NAME}"
 echo "Dashboard URL:       http://localhost:${APP_PORT}/"
 if [[ -f "$INSTALL_DIR/ssl/cert.pem" ]]; then
@@ -573,6 +609,7 @@ else
 fi
 echo "Auto-updater:        sudo systemctl status ${SERVICE_NAME}-updater.timer  (runs every 6h if enabled in the admin panel; branch in scripts/auto-update.conf)"
 echo "Network reconciler:  sudo systemctl status dashboard-net-apply  (applies Wi-Fi/hotspot/reboot requests from the admin panel every ~5s)"
+echo "Health check:        sudo systemctl status dashboard-health-check.timer  (runs once ~2min after boot; rolls back to last-known-good on failure)"
 echo
 if is_headless; then
   echo "Headless mode — the service is already running, nothing more to do."

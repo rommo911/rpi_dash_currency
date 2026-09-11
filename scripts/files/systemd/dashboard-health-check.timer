@@ -1,0 +1,9 @@
+[Unit]
+Description=Run the Currency Dashboard health check ~2 minutes after boot
+
+[Timer]
+OnBootSec=120
+Persistent=false
+
+[Install]
+WantedBy=timers.target
