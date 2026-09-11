@@ -728,6 +728,22 @@ before touching any provisioning/deploy script.
   listening on UDP/67, logging a loud ERROR for either — both of these
   bugs were invisible for multiple debugging rounds precisely because
   nothing checked.
+- **A blank Wi-Fi/hotspot password field means "keep the saved one", and
+  ONLY ever resolves for an SSID that is unchanged — it never means "open
+  network".** Open networks are rejected outright: `admin_wifi_save()` and
+  `admin_ap_save()` both refuse to write an entry without a password. The
+  password inputs are `type="password"` with no `value=`, deliberately never
+  echoed back into the HTML (same reasoning as `ADMIN_PASSWORD` having no
+  edit UI), so a blank submission is genuinely ambiguous between "leave it
+  alone" and "clear it" — these two routes resolve that ambiguity by looking
+  up the *old* password **keyed by SSID**, not by slot position. Keying by
+  SSID is the load-bearing part: it means editing only a network's name
+  still demands its password, so a renamed SSID can never silently inherit
+  the previous network's PSK, and reordering the three slots can never shuffle
+  passwords onto the wrong networks. `validate_wifi_password()` still returns
+  `""` for an empty field (it's a length validator, not a policy one) — the
+  "no open networks" policy lives in the two routes, so don't move an
+  emptiness check down into the validator and assume the routes are covered.
 - **`net_config.default.json` ships real Wi-Fi/hotspot passwords in a
   repo that is PUBLIC on GitHub.** This is a deliberate, requested
   trade-off, not an oversight: a fresh board clones this repo over the

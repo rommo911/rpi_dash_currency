@@ -165,7 +165,8 @@ MAX_PRICE_VALUE = 1_000_000  # 1e12 — comfortably above any real price, guards
 
 MAX_SSID_LEN = 32  # 802.11 SSID byte cap, treated as a char cap here (ASCII in practice)
 MIN_WIFI_PASS_LEN = 8
-MAX_WIFI_PASS_LEN = 63  # WPA2-PSK bounds; blank means an open network
+MAX_WIFI_PASS_LEN = 63  # WPA2-PSK bounds. A blank field means "keep the saved
+                        # password", never an open network — see admin_wifi_save().
 MAX_WIFI_SLOTS = 2
 
 # ISO-4217 currency code -> ISO-3166 country code, for currencies where the
@@ -245,8 +246,8 @@ TRANSLATIONS = {
         "wifi_unavailable": "Wi-Fi management is unavailable in this environment (no network reconciler detected — normal for local/Windows testing).",
         "wifi_slot_label": "Network {n}",
         "wifi_ssid_ph": "SSID",
-        "wifi_password_ph": "Password (blank = open network)",
-        "wifi_password_note": "Passwords are never shown again after saving — retype a network's password every time you save this card, or leave it blank for an open network. Changes apply within a few seconds.",
+        "wifi_password_ph": "Password (blank = keep saved)",
+        "wifi_password_note": "Passwords are never shown again after saving. Leave one blank only to keep the password already saved for that exact SSID — adding or changing an SSID requires typing its password. Open (password-less) networks are not allowed. Changes apply within a few seconds.",
         "wifi_save_btn": "Save Wi-Fi networks",
         "wifi_save_started": "Saved — the Pi will try these networks within a few seconds.",
         "hotspot_heading": "Emergency Hotspot Fallback",
@@ -254,24 +255,26 @@ TRANSLATIONS = {
         "hotspot_installed_inactive": "Installed, watching for Wi-Fi loss (not currently broadcasting).",
         "hotspot_active": "Currently broadcasting — primary Wi-Fi appears to be down. You may be viewing this page over the hotspot right now.",
         "hotspot_ssid_ph": "Hotspot SSID",
-        "hotspot_password_ph": "Hotspot password (min 8 characters)",
+        "hotspot_password_ph": "Hotspot password (min 8, blank = keep saved)",
         "hotspot_save_btn": "Save hotspot",
         "hotspot_disable_btn": "Disable hotspot",
         "hotspot_disable_confirm": "Disable the emergency hotspot? If this Pi ever loses its primary Wi-Fi, it will have no fallback way to reach it remotely.",
         "hotspot_saved": "Saved — the hotspot will be configured within a few seconds.",
         "hotspot_disabled": "Hotspot fallback disabled.",
         "err_hotspot_password_len": "Hotspot password must be {min}-{max} characters.",
+        "err_hotspot_password_required": "The hotspot needs a password — open hotspots aren't allowed. Leave the field blank only to keep the saved password for an unchanged SSID.",
         "restart_heading": "System",
         "restart_btn": "Restart board",
         "restart_confirm": "Restart the Raspberry Pi now? The dashboard and admin panel will be unreachable for roughly a minute.",
         "restart_started": "Reboot requested — the board will restart within a few seconds.",
         "err_ssid_invalid": "{field} is invalid or too long (max {max} characters, can't start with '-').",
-        "err_wifi_password_len": "{field} must be blank (open network) or {min}-{max} characters.",
+        "err_wifi_password_len": "{field} must be {min}-{max} characters.",
+        "err_wifi_password_required": "{field} needs a password — open networks aren't allowed. Leave the field blank only to keep the password already saved for that same SSID.",
         "system_nav_btn": "System, Network & Updates",
         "system_heading": "System & Network",
         "system_sub": "Wi-Fi, hotspot fallback, updates, and board restart.",
         "back_to_admin": "← Back to dashboard settings",
-        "wifi_prefilled_note": "Showing currently configured network(s) — passwords aren't stored here and must be retyped before saving, or this network will be reconfigured as open.",
+        "wifi_prefilled_note": "Showing currently configured network(s). Leave a password blank to keep the one already saved for that SSID; if you change an SSID, you must type its password too.",
     },
     "ar": {
         "panel_title": "لوحة التحكم",
@@ -325,8 +328,8 @@ TRANSLATIONS = {
         "wifi_unavailable": "إدارة واي فاي غير متاحة في هذه البيئة (لم يتم العثور على خدمة المطابقة — طبيعي عند الاختبار المحلي على ويندوز).",
         "wifi_slot_label": "الشبكة {n}",
         "wifi_ssid_ph": "اسم الشبكة (SSID)",
-        "wifi_password_ph": "كلمة المرور (فارغة = شبكة مفتوحة)",
-        "wifi_password_note": "لا تُعرض كلمات المرور مجددًا بعد الحفظ — أعد كتابة كلمة مرور الشبكة في كل مرة تحفظ فيها هذه البطاقة، أو اتركها فارغة لشبكة مفتوحة. تُطبَّق التغييرات خلال ثوانٍ قليلة.",
+        "wifi_password_ph": "كلمة المرور (فارغة = الإبقاء على المحفوظة)",
+        "wifi_password_note": "لا تُعرض كلمات المرور مجددًا بعد الحفظ. اترك الحقل فارغًا فقط للإبقاء على كلمة المرور المحفوظة لنفس الـ SSID — أمّا إضافة SSID أو تغييره فتتطلب كتابة كلمة مروره. الشبكات المفتوحة (بدون كلمة مرور) غير مسموح بها. تُطبَّق التغييرات خلال ثوانٍ قليلة.",
         "wifi_save_btn": "حفظ شبكات الواي فاي",
         "wifi_save_started": "تم الحفظ — سيحاول الجهاز الاتصال بهذه الشبكات خلال ثوانٍ قليلة.",
         "hotspot_heading": "نقطة الاتصال الاحتياطية للطوارئ",
@@ -334,24 +337,26 @@ TRANSLATIONS = {
         "hotspot_installed_inactive": "مُثبَّتة وتراقب انقطاع الواي فاي (لا تبث حاليًا).",
         "hotspot_active": "تبث حاليًا — يبدو أن الواي فاي الأساسي معطل. قد تكون تشاهد هذه الصفحة عبر نقطة الاتصال الآن.",
         "hotspot_ssid_ph": "اسم نقطة الاتصال",
-        "hotspot_password_ph": "كلمة مرور نقطة الاتصال (8 أحرف على الأقل)",
+        "hotspot_password_ph": "كلمة مرور نقطة الاتصال (8 أحرف على الأقل، فارغة = الإبقاء على المحفوظة)",
         "hotspot_save_btn": "حفظ نقطة الاتصال",
         "hotspot_disable_btn": "تعطيل نقطة الاتصال",
         "hotspot_disable_confirm": "هل تريد تعطيل نقطة الاتصال الاحتياطية؟ إذا فقد هذا الجهاز اتصال الواي فاي الأساسي، فلن يكون لديه وسيلة احتياطية للوصول إليه عن بُعد.",
         "hotspot_saved": "تم الحفظ — سيتم تهيئة نقطة الاتصال خلال ثوانٍ قليلة.",
         "hotspot_disabled": "تم تعطيل نقطة الاتصال الاحتياطية.",
         "err_hotspot_password_len": "يجب أن تكون كلمة مرور نقطة الاتصال بين {min} و{max} حرفًا.",
+        "err_hotspot_password_required": "نقطة الاتصال تحتاج إلى كلمة مرور — نقاط الاتصال المفتوحة غير مسموح بها. اترك الحقل فارغًا فقط للإبقاء على الكلمة المحفوظة لـ SSID لم يتغيّر.",
         "restart_heading": "النظام",
         "restart_btn": "إعادة تشغيل الجهاز",
         "restart_confirm": "هل تريد إعادة تشغيل جهاز Raspberry Pi الآن؟ ستكون لوحة العرض ولوحة التحكم غير متاحتين لمدة دقيقة تقريبًا.",
         "restart_started": "تم طلب إعادة التشغيل — سيُعاد تشغيل الجهاز خلال ثوانٍ قليلة.",
         "err_ssid_invalid": "{field} غير صالح أو طويل جدًا (الحد الأقصى {max} حرفًا، ولا يمكن أن يبدأ بـ '-').",
-        "err_wifi_password_len": "يجب أن تكون قيمة {field} فارغة (شبكة مفتوحة) أو بين {min} و{max} حرفًا.",
+        "err_wifi_password_len": "يجب أن تكون قيمة {field} بين {min} و{max} حرفًا.",
+        "err_wifi_password_required": "{field} تحتاج إلى كلمة مرور — الشبكات المفتوحة غير مسموح بها. اترك الحقل فارغًا فقط للإبقاء على الكلمة المحفوظة لنفس الـ SSID.",
         "system_nav_btn": "النظام والشبكة والتحديثات",
         "system_heading": "النظام والشبكة",
         "system_sub": "الواي فاي، نقطة الاتصال الاحتياطية، التحديثات، وإعادة تشغيل الجهاز.",
         "back_to_admin": "← العودة إلى إعدادات لوحة التحكم",
-        "wifi_prefilled_note": "يتم عرض الشبكة (الشبكات) المُهيأة حاليًا — كلمات المرور غير مخزنة هنا ويجب إعادة كتابتها قبل الحفظ، وإلا ستتم إعادة تهيئة هذه الشبكة كشبكة مفتوحة.",
+        "wifi_prefilled_note": "يتم عرض الشبكة (الشبكات) المُهيأة حاليًا. اترك كلمة المرور فارغة للإبقاء على المحفوظة لنفس الـ SSID؛ وإذا غيّرت الـ SSID فيجب كتابة كلمة مروره أيضًا.",
     },
 }
 
@@ -563,10 +568,15 @@ def clean_ssid(raw):
 
 
 def validate_wifi_password(raw):
-    """Empty (open network) or MIN_WIFI_PASS_LEN-MAX_WIFI_PASS_LEN chars
-    (WPA2-PSK bounds). Unlike clean_text(), doesn't collapse/strip
-    whitespace — a Wi-Fi password may legitimately contain meaningful
-    spaces. Returns None if outside the allowed length range."""
+    """Empty, or MIN_WIFI_PASS_LEN-MAX_WIFI_PASS_LEN chars (WPA2-PSK
+    bounds). Unlike clean_text(), doesn't collapse/strip whitespace — a
+    Wi-Fi password may legitimately contain meaningful spaces. Returns
+    None if outside the allowed length range.
+
+    Empty is NOT "open network" here — open networks are rejected outright
+    by the callers. It only means "the admin left the field alone", which
+    admin_wifi_save()/admin_ap_save() resolve to the saved password for an
+    unchanged SSID, or to an error."""
     if raw is None:
         return ""
     cleaned = "".join(ch for ch in raw if unicodedata.category(ch)[0] != "C")
@@ -1400,7 +1410,7 @@ SYSTEM_HTML = ADMIN_STYLE + """
       <div>
         <label class="field-label">{{ t.wifi_slot_label.format(n=loop.index) }}</label>
         <input type="text" name="wifi_ssid_{{ loop.index }}" form="wifi-save" value="{{ slot.ssid or '' }}" placeholder="{{ t.wifi_ssid_ph }}" maxlength="{{ max_ssid_len }}">
-        <input type="password" name="wifi_password_{{ loop.index }}" form="wifi-save" placeholder="{{ t.wifi_password_ph }}" autocomplete="off">
+        <input type="password" name="wifi_password_{{ loop.index }}" form="wifi-save" placeholder="{{ t.wifi_password_ph }}" autocomplete="off" minlength="{{ min_wifi_pass_len }}" maxlength="{{ max_wifi_pass_len }}">
       </div>
       {% endfor %}
       {% if wifi_prefilled %}<div style="color:var(--text-dim); font-size:0.85rem; width:100%;">{{ t.wifi_prefilled_note }}</div>{% endif %}
@@ -1424,7 +1434,7 @@ SYSTEM_HTML = ADMIN_STYLE + """
         {% endif %}
       </div>
       <input type="text" name="ap_ssid" form="ap-save" value="{{ ap_fallback.ssid or '' }}" placeholder="{{ t.hotspot_ssid_ph }}" maxlength="{{ max_ssid_len }}">
-      <input type="password" name="ap_password" form="ap-save" placeholder="{{ t.hotspot_password_ph }}" autocomplete="off">
+      <input type="password" name="ap_password" form="ap-save" placeholder="{{ t.hotspot_password_ph }}" autocomplete="off" minlength="{{ min_wifi_pass_len }}" maxlength="{{ max_wifi_pass_len }}">
       <button type="submit" form="ap-save" class="save">{{ t.hotspot_save_btn }}</button>
       {% if ap_fallback.enabled %}
       <button type="submit" form="ap-disable" class="delete" onclick="return confirm('{{ t.hotspot_disable_confirm }}');">{{ t.hotspot_disable_btn }}</button>
@@ -1533,6 +1543,8 @@ def admin_system_page():
         msg=request.args.get("msg"),
         error=request.args.get("error"),
         max_ssid_len=MAX_SSID_LEN,
+        min_wifi_pass_len=MIN_WIFI_PASS_LEN,
+        max_wifi_pass_len=MAX_WIFI_PASS_LEN,
         csrf_token=csrf_token(),
         app_version=APP_VERSION,
         app_commit=APP_COMMIT,
@@ -1708,8 +1720,16 @@ def admin_wifi_save():
             return redirect(url_for("admin_system_page", error=t["err_wifi_password_len"].format(
                 field=field_label, min=MIN_WIFI_PASS_LEN, max=MAX_WIFI_PASS_LEN)))
         if ssid:
-            if not password and ssid in old_by_ssid:
-                password = old_by_ssid[ssid]
+            # No open networks, ever: every saved slot must carry a password.
+            # A blank field is purely the "keep what is already stored"
+            # sentinel, and it only resolves for an SSID that is unchanged
+            # AND already has a non-empty password on file — keyed by SSID, so
+            # renaming or adding a network always demands its own password
+            # instead of silently inheriting the previous one.
+            if not password:
+                password = old_by_ssid.get(ssid) or ""
+            if not password:
+                return redirect(url_for("admin_system_page", error=t["err_wifi_password_required"].format(field=field_label)))
             slots.append({"ssid": ssid, "password": password})
 
     cfg["wifi"] = slots
@@ -1736,13 +1756,17 @@ def admin_ap_save():
             min=MIN_WIFI_PASS_LEN, max=MAX_WIFI_PASS_LEN)))
 
     cfg = load_net_config()
-    # Same never-pre-filled password field as the Wi-Fi client slots above:
-    # a blank submission means "keep the existing hotspot password" (e.g.
-    # editing only the SSID), not "clear it" — a WPA2-PSK profile requires
-    # SOME password, so this only falls through to the length-error below
-    # when there was never a password saved either.
+    old_ap = cfg.get("ap_fallback") or {}
+    # Same never-pre-filled password field as the Wi-Fi client slots above,
+    # and the same rule: a blank submission means "keep the saved hotspot
+    # password", but ONLY while the SSID is unchanged. Renaming the hotspot
+    # requires typing its password again rather than silently carrying the
+    # old one over, and an open AP is never written — WPA2-PSK needs a key.
     if not password:
-        password = (cfg.get("ap_fallback") or {}).get("password") or ""
+        if ssid == old_ap.get("ssid"):
+            password = old_ap.get("password") or ""
+        if not password:
+            return redirect(url_for("admin_system_page", error=t["err_hotspot_password_required"]))
     if len(password) < MIN_WIFI_PASS_LEN:
         return redirect(url_for("admin_system_page", error=t["err_hotspot_password_len"].format(
             min=MIN_WIFI_PASS_LEN, max=MAX_WIFI_PASS_LEN)))
