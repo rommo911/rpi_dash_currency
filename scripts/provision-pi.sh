@@ -73,6 +73,105 @@ check_internet() {
   return 1
 }
 
+# netplan_wifi_dev — tool-free wireless-device detection for the no-nmcli
+# path: every wifi netdev has a "wireless" subdir under /sys/class/net.
+netplan_wifi_dev() {
+  local d
+  for d in /sys/class/net/*/wireless; do
+    [[ -d "$d" ]] || continue
+    basename "$(dirname "$d")"
+    return
+  done
+}
+
+# has_netplan — Armbian/Orange Pi and other Debian-family images without
+# NetworkManager commonly use netplan + systemd-networkd + wpa_supplicant
+# instead (confirmed live on an Orange Pi Zero 3 running Armbian trixie).
+has_netplan() {
+  command -v netplan >/dev/null 2>&1 && [[ -d /etc/netplan ]]
+}
+
+# write_netplan_wifi <ssid> <password-or-empty> — writes ONE dedicated
+# file this provisioning step fully owns (same file dashboard-net-apply.sh
+# manages later at runtime, so the admin panel's Wi-Fi card picks up
+# straight from here with no extra migration step). Claims the device
+# away from any OTHER netplan file that already configures it first (an
+# Armbian board-bring-up file, most likely) via a real YAML parse/rewrite
+# — never sed/regex on YAML — backing up the foreign file once before
+# ever touching it. Requires python3-yaml; installed on the spot if
+# missing (this is provisioning time, apt is expected to work here).
+write_netplan_wifi() {
+  local ssid="$1" password="$2" wifi_dev
+  wifi_dev="$(netplan_wifi_dev)"
+  if [[ -z "$wifi_dev" ]]; then
+    warn "No Wi-Fi device detected."
+    return 1
+  fi
+  if ! python3 -c "import yaml" >/dev/null 2>&1; then
+    sudo apt-get install -y python3-yaml >/dev/null 2>&1 || true
+  fi
+  if ! python3 -c "import yaml" >/dev/null 2>&1; then
+    warn "python3-yaml unavailable — can't safely write netplan config."
+    return 1
+  fi
+
+  local dest="/etc/netplan/90-dashboard-wifi.yaml"
+  sudo python3 - "$wifi_dev" "$dest" <<'PYEOF'
+import glob, os, shutil, sys
+import yaml
+
+wifi_dev, our_file = sys.argv[1], sys.argv[2]
+for path in glob.glob("/etc/netplan/*.yaml"):
+    if os.path.realpath(path) == os.path.realpath(our_file):
+        continue
+    try:
+        with open(path, encoding="utf-8") as f:
+            doc = yaml.safe_load(f) or {}
+    except Exception:
+        continue
+    net = doc.get("network") or {}
+    wifis = net.get("wifis") or {}
+    if wifi_dev not in wifis:
+        continue
+    backup = path + ".dashboard-orig.bak"
+    if not os.path.exists(backup):
+        shutil.copy2(path, backup)
+    del wifis[wifi_dev]
+    if wifis:
+        net["wifis"] = wifis
+    else:
+        net.pop("wifis", None)
+    doc["network"] = net
+    with open(path, "w", encoding="utf-8") as f:
+        yaml.safe_dump(doc, f, default_flow_style=False, sort_keys=False)
+PYEOF
+
+  sudo python3 - "$wifi_dev" "$ssid" "$password" "$dest" <<'PYEOF'
+import sys
+import yaml
+
+wifi_dev, ssid, password, dest = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
+doc = {
+    "network": {
+        "version": 2,
+        "renderer": "networkd",
+        "wifis": {
+            wifi_dev: {
+                "dhcp4": True,
+                "access-points": {ssid: ({"password": password} if password else {})},
+            }
+        },
+    }
+}
+with open(dest, "w", encoding="utf-8") as f:
+    f.write("# Managed by dashboard-net-apply — do not edit by hand, it is\n")
+    f.write("# regenerated from net_config.json on every change.\n")
+    yaml.safe_dump(doc, f, default_flow_style=False, sort_keys=False)
+PYEOF
+  sudo chmod 600 "$dest" 2>/dev/null || true
+  sudo netplan apply 2>/dev/null || { warn "netplan apply failed."; return 1; }
+}
+
 connect_wifi_auto() {
   # Non-interactive path for --auto_default: create (or refresh) a saved
   # profile for SSID "dashboard" / password "123456789" and try to bring
@@ -81,6 +180,12 @@ connect_wifi_auto() {
   # harden-system.sh's AP-fallback step builds on this same saved profile
   # regardless of whether it's reachable right now.
   if ! command -v nmcli >/dev/null 2>&1; then
+    if has_netplan; then
+      log "nmcli not found but netplan is — configuring default Wi-Fi profile 'dashboard' via netplan (auto mode)"
+      write_netplan_wifi "dashboard" "123456789" || \
+        warn "Could not write netplan Wi-Fi config — relying on Ethernet."
+      return 0
+    fi
     warn "nmcli (NetworkManager) not found — can't configure Wi-Fi automatically. Connect Ethernet instead."
     if is_armbian; then
       warn "Armbian/Orange Pi images commonly use NetworkManager; if nmcli is missing on your image, configure networking via armbian-config or the OS's normal network tool."
@@ -106,8 +211,40 @@ connect_wifi_auto() {
     warn "Could not connect to 'dashboard' right now — profile is saved, will connect automatically once that SSID is in range."
 }
 
+# connect_wifi_netplan — interactive no-nmcli path. Skips scanning
+# (would need `iw`, an extra dependency for a rare fallback) and just
+# prompts directly for SSID/password, same as the manual-SSID-entry
+# option the nmcli path already offers when its own scan finds nothing.
+connect_wifi_netplan() {
+  local wifi_dev
+  wifi_dev="$(netplan_wifi_dev)"
+  if [[ -z "$wifi_dev" ]]; then
+    warn "No Wi-Fi device detected."
+    return 1
+  fi
+  read -rp "SSID to connect to (leave blank to skip): " WIFI_SSID
+  [[ -z "$WIFI_SSID" ]] && return 1
+  read -rsp "Password for '$WIFI_SSID' (leave blank for an open network): " WIFI_PASS
+  echo
+
+  write_netplan_wifi "$WIFI_SSID" "$WIFI_PASS" || { warn "Failed to apply netplan Wi-Fi config."; return 1; }
+
+  sleep 5
+  if ip -4 route show dev "$wifi_dev" 2>/dev/null | grep -q '^default'; then
+    WIFI_IP="$(ip -4 -o addr show dev "$wifi_dev" 2>/dev/null | awk '{print $4}' | cut -d/ -f1 | head -n1)"
+    echo "Connected — IP address: ${WIFI_IP:-unknown}"
+  else
+    warn "Device isn't showing a default route yet — Wi-Fi may still be negotiating, or the SSID/password may be wrong. Check later with: sudo netplan status"
+  fi
+}
+
 connect_wifi() {
   if ! command -v nmcli >/dev/null 2>&1; then
+    if has_netplan; then
+      log "nmcli not found but netplan is — configuring Wi-Fi via netplan instead"
+      connect_wifi_netplan
+      return
+    fi
     warn "nmcli (NetworkManager) not found on this system — can't configure Wi-Fi from here."
     if is_armbian; then
       warn "Armbian/Orange Pi typically uses NetworkManager or armbian-config for Wi-Fi; connect via Ethernet or configure the OS's native networking tool first."
