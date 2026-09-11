@@ -281,21 +281,22 @@ sudo systemctl enable --now dashboard-net-apply
 # On any image WITHOUT NetworkManager (confirmed live on Armbian/Orange Pi,
 # which uses netplan + systemd-networkd + wpa_supplicant instead), the
 # daemon above falls back to a netplan-based Wi-Fi backend and drives
-# hostapd/dnsmasq directly for the emergency-AP fallback — see that
-# script's own header comment for the full design. Those two packages
-# (plus `iw`, used only to read the currently-associated SSID for the
-# admin panel) are only needed on that fallback path; a NetworkManager
-# image (Raspberry Pi OS Bookworm+) never touches them. Disabling their
-# own persistent services immediately after install is deliberate: this
-# daemon always runs them as its own transient `systemd-run` units
-# on demand, never the shared hostapd.service/dnsmasq.service default
-# configs, so those must never be left enabled to auto-start at boot
-# against an empty/absent config.
+# hostapd directly for the emergency-AP fallback (DHCP is served by
+# systemd-networkd's own built-in DHCP-server role, already running and
+# proven on this box — no dnsmasq) — see that script's own header
+# comment for the full design. hostapd (plus `iw`, used only to read the
+# currently-associated SSID for the admin panel) is only needed on that
+# fallback path; a NetworkManager image (Raspberry Pi OS Bookworm+) never
+# touches it. Disabling its own persistent service immediately after
+# install is deliberate: this daemon always runs it as its own transient
+# `systemd-run` unit on demand, never the shared hostapd.service/its
+# default config, so that must never be left enabled to auto-start at
+# boot against an empty/absent config.
 if ! command -v nmcli >/dev/null 2>&1; then
-  log "No NetworkManager detected — installing netplan-backend Wi-Fi fallback dependencies (hostapd, dnsmasq, iw)"
-  sudo apt-get install -y hostapd dnsmasq iw || \
-    warn "Failed to install hostapd/dnsmasq/iw — the emergency Wi-Fi hotspot fallback won't work until this is resolved (Wi-Fi client networking is unaffected)."
-  sudo systemctl disable --now hostapd dnsmasq >/dev/null 2>&1 || true
+  log "No NetworkManager detected — installing netplan-backend Wi-Fi fallback dependencies (hostapd, iw)"
+  sudo apt-get install -y hostapd iw || \
+    warn "Failed to install hostapd/iw — the emergency Wi-Fi hotspot fallback won't work until this is resolved (Wi-Fi client networking is unaffected)."
+  sudo systemctl disable --now hostapd >/dev/null 2>&1 || true
 fi
 
 log "Waiting for the dashboard to respond on port ${APP_PORT}"

@@ -19,17 +19,17 @@
 #               real Orange Pi Zero 3 (Armbian trixie) where `nmcli` isn't
 #               installed at all but `netplan`/`wpa_supplicant` are. This
 #               backend writes a dedicated netplan YAML file for the
-#               client Wi-Fi slots and drives hostapd+dnsmasq directly
-#               for the AP fallback, since netplan on this system has no
-#               working Wi-Fi-AP-mode renderer (`netplan info` reports no
-#               such feature) — nmcli's builtin AP-mode trick has no
-#               equivalent here, so this reimplements the same emergency-
-#               AP behavior wifi-ap-fallback.sh/its watchdog provide on
-#               the nmcli side, using hostapd/dnsmasq as its own isolated
-#               `systemd-run` units instead of persistent system services
-#               (never touches /etc/hostapd/hostapd.conf or the default
-#               dnsmasq.service — avoids clobbering anything else that
-#               might use those on the box).
+#               client Wi-Fi slots and drives hostapd (own transient
+#               `systemd-run` unit, never /etc/hostapd/hostapd.conf or
+#               the shared hostapd.service) + systemd-networkd's own
+#               built-in DHCP-server role for the AP fallback, since
+#               netplan on this system has no working Wi-Fi-AP-mode
+#               renderer (`netplan info` reports no such feature) —
+#               nmcli's builtin AP-mode trick has no equivalent here, so
+#               this reimplements the same emergency-AP behavior
+#               wifi-ap-fallback.sh/its watchdog provide on the nmcli
+#               side. No dnsmasq: systemd-networkd is already running
+#               and proven on this box, one less daemon to misconfigure.
 #   - "none"    Neither present — every network action is skipped (reboot
 #               handling still works, it has nothing to do with Wi-Fi).
 #
@@ -53,12 +53,9 @@ APPLIED_SSIDS_FILE="$STATUS_DIR/applied_ssids"
 NETPLAN_FILE="/etc/netplan/90-dashboard-wifi.yaml"
 AP_IFACE_IP="192.168.50.1"
 AP_IFACE_CIDR="192.168.50.1/24"
-AP_DHCP_RANGE_START="192.168.50.10"
-AP_DHCP_RANGE_END="192.168.50.100"
 AP_HOSTAPD_CONF="/run/dashboard-ap-hostapd.conf"
-AP_DNSMASQ_CONF="/run/dashboard-ap-dnsmasq.conf"
 AP_HOSTAPD_UNIT="dashboard-ap-hostapd"
-AP_DNSMASQ_UNIT="dashboard-ap-dnsmasq"
+AP_NETWORKD_FILE="/etc/systemd/network/90-dashboard-ap.network"
 
 CHECK_INTERVAL="${CHECK_INTERVAL:-5}"
 
@@ -381,13 +378,22 @@ reconcile_ap_fallback_nmcli() {
   fi
 }
 
-# --- netplan-backend AP fallback: hostapd + dnsmasq, run as our own
-# transient systemd-run units (never the shared hostapd.service/
-# dnsmasq.service or their default configs, so this never conflicts with
-# anything else that might use those on the box). Unlike the nmcli path
-# above, this is called EVERY tick, unconditionally — there is no
-# separate always-on watchdog service for this backend, so the
-# continuous "is primary Wi-Fi down right now" check lives here instead.
+# --- netplan-backend AP fallback: hostapd for the radio, systemd-networkd's
+# OWN built-in DHCP server for leases (no dnsmasq — one less daemon, one
+# less place to misconfigure, and it's infrastructure already running and
+# proven on this box). hostapd runs as our own transient `systemd-run`
+# unit (never the shared hostapd.service/its default config). Unlike the
+# nmcli path above, this is called EVERY tick, unconditionally — there is
+# no separate always-on watchdog service for this backend, so the
+# continuous "is primary Wi-Fi down right now, and can it be recovered"
+# check lives here instead, structured exactly like
+# wifi-ap-fallback-watchdog.sh's own connected/try_reconnect/start_ap
+# loop: a single bad reading must NOT trigger AP mode, and once in AP
+# mode this MUST keep retrying the primary connection and revert the
+# instant it's back — both of those were missing in an earlier version
+# of this function and caused a real, live incident (falling back to AP
+# on a transient dip, then never reverting since a radio held by hostapd
+# can never show a route again on its own).
 
 ap_hostapd_active() {
   systemctl is-active --quiet "$AP_HOSTAPD_UNIT" 2>/dev/null
@@ -404,13 +410,34 @@ wifi_connected_netplan() {
 start_ap_netplan() {
   local wifi_dev="$1" ssid="$2" password="$3"
   ap_hostapd_active && return 0
-  log "Wi-Fi unavailable — starting emergency AP ($ssid) via hostapd/dnsmasq on $wifi_dev"
+  log "Wi-Fi unavailable after retrying — starting emergency AP ($ssid) on $wifi_dev"
 
   systemctl stop "netplan-wpa-${wifi_dev}.service" >/dev/null 2>&1 || true
   ip link set "$wifi_dev" down >/dev/null 2>&1 || true
   ip addr flush dev "$wifi_dev" >/dev/null 2>&1 || true
+
+  # Hand this interface to systemd-networkd's own DHCP-server role
+  # instead of netplan's (client) config — /etc is searched before /run
+  # in systemd-networkd's own config precedence, so this wins over
+  # netplan's generated /run/systemd/network/*.network unconditionally,
+  # no filename-ordering trick needed.
+  cat > "$AP_NETWORKD_FILE" <<EOF
+[Match]
+Name=$wifi_dev
+
+[Network]
+Address=$AP_IFACE_CIDR
+DHCPServer=yes
+IPForward=no
+
+[DHCPServer]
+PoolOffset=10
+PoolSize=90
+EmitDNS=no
+EOF
+  networkctl reload >/dev/null 2>&1 || true
   ip link set "$wifi_dev" up >/dev/null 2>&1 || true
-  ip addr add "$AP_IFACE_CIDR" dev "$wifi_dev" >/dev/null 2>&1 || true
+  networkctl reconfigure "$wifi_dev" >/dev/null 2>&1 || true
 
   cat > "$AP_HOSTAPD_CONF" <<EOF
 interface=$wifi_dev
@@ -426,31 +453,44 @@ rsn_pairwise=CCMP
 EOF
   chmod 600 "$AP_HOSTAPD_CONF"
 
-  cat > "$AP_DNSMASQ_CONF" <<EOF
-interface=$wifi_dev
-bind-interfaces
-except-interface=lo
-dhcp-range=$AP_DHCP_RANGE_START,$AP_DHCP_RANGE_END,255.255.255.0,12h
-EOF
-
   if systemd-run --unit="$AP_HOSTAPD_UNIT" --collect \
-      -- /usr/sbin/hostapd "$AP_HOSTAPD_CONF" >/dev/null 2>&1 && \
-     systemd-run --unit="$AP_DNSMASQ_UNIT" --collect \
-      -- /usr/sbin/dnsmasq --keep-in-foreground --conf-file="$AP_DNSMASQ_CONF" >/dev/null 2>&1; then
-    log "Emergency AP up: $ssid (${AP_IFACE_IP})"
+      -- /usr/sbin/hostapd "$AP_HOSTAPD_CONF" >/dev/null 2>&1; then
+    log "Emergency AP up: $ssid (${AP_IFACE_IP}, DHCP via systemd-networkd)"
   else
-    log "ERROR: failed to start hostapd/dnsmasq for emergency AP — is 'hostapd dnsmasq' installed?"
+    log "ERROR: failed to start hostapd for emergency AP — is 'hostapd' installed?"
   fi
 }
 
+# stop_ap_netplan — always safe to call even if the AP isn't active
+# (e.g. after a successful reconnect attempt): removes the AP-mode
+# networkd config (so it stops claiming DHCPServer duty on this link)
+# and restores the normal netplan-managed client.
 stop_ap_netplan() {
   local wifi_dev="$1"
-  ap_hostapd_active || return 0
-  log "Normal Wi-Fi is back (or fallback disabled) — stopping emergency AP, restoring client mode on $wifi_dev"
-  systemctl stop "$AP_HOSTAPD_UNIT" "$AP_DNSMASQ_UNIT" >/dev/null 2>&1 || true
+  systemctl stop "$AP_HOSTAPD_UNIT" >/dev/null 2>&1 || true
+  rm -f "$AP_NETWORKD_FILE"
+  networkctl reload >/dev/null 2>&1 || true
   ip addr flush dev "$wifi_dev" >/dev/null 2>&1 || true
   systemctl start "netplan-wpa-${wifi_dev}.service" >/dev/null 2>&1 || true
   netplan apply >/dev/null 2>&1 || true
+}
+
+# try_reconnect_netplan — mirrors wifi-ap-fallback-watchdog.sh's
+# try_reconnect() exactly: always attempt the primary connection first
+# (whether or not the AP is currently up) and give it a real timeout
+# window before giving up, rather than reacting to a single tick's
+# reading. This is what makes falling back to AP a last resort instead
+# of a hair-trigger, AND what lets the daemon find its way back out of
+# AP mode once the primary network is actually reachable again.
+try_reconnect_netplan() {
+  local wifi_dev="$1" timeout="${WIFI_RECONNECT_TIMEOUT:-25}"
+  stop_ap_netplan "$wifi_dev"
+  local i
+  for ((i = 0; i < timeout; i++)); do
+    wifi_connected_netplan "$wifi_dev" && return 0
+    sleep 1
+  done
+  wifi_connected_netplan "$wifi_dev"
 }
 
 reconcile_ap_netplan() {
@@ -460,15 +500,20 @@ reconcile_ap_netplan() {
   local enabled="${fields[0]:-0}" ssid="${fields[1]:-}" password="${fields[2]:-}"
 
   if [[ "$enabled" != "1" || -z "$ssid" || -z "$password" ]]; then
-    stop_ap_netplan "$wifi_dev"
+    ap_hostapd_active && stop_ap_netplan "$wifi_dev"
     return
   fi
-  if ! command -v hostapd >/dev/null 2>&1 || ! command -v dnsmasq >/dev/null 2>&1; then
-    log "AP fallback enabled but hostapd/dnsmasq not installed — skipping (see deploy-dashboard.sh)"
+  if ! command -v hostapd >/dev/null 2>&1; then
+    log "AP fallback enabled but hostapd not installed — skipping (see deploy-dashboard.sh)"
     return
   fi
-  if wifi_connected_netplan "$wifi_dev"; then
-    stop_ap_netplan "$wifi_dev"
+
+  if wifi_connected_netplan "$wifi_dev" && ! ap_hostapd_active; then
+    return  # already fine, nothing to do — the common case, checked cheaply first
+  fi
+
+  if try_reconnect_netplan "$wifi_dev"; then
+    log "Wi-Fi reconnected — staying in client mode"
   else
     start_ap_netplan "$wifi_dev" "$ssid" "$password"
   fi
