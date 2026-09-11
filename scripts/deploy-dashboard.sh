@@ -73,7 +73,7 @@ if ! is_headless; then
   fi
 fi
 
-log "1/11 Installing system dependencies"
+log "1/12 Installing system dependencies"
 sudo apt update
 sudo apt install -y git python3-venv python3-pip curl openssl
 
@@ -89,7 +89,7 @@ else
   fi
 fi
 
-log "2/11 Cloning/updating repository into $INSTALL_DIR"
+log "2/12 Cloning/updating repository into $INSTALL_DIR"
 if [[ -d "$INSTALL_DIR/.git" ]]; then
   # A checkout from before data.json/config.py were gitignored may still
   # have them TRACKED with local (real, live) modifications — untrack
@@ -115,7 +115,7 @@ FILES_DIR="$INSTALL_DIR/scripts/files"
 # shellcheck disable=SC1091
 source "$INSTALL_DIR/scripts/lib.sh"
 
-log "3/11 Setting up local config (data.json, .env, auto-update.conf)"
+log "3/12 Setting up local config (data.json, .env, auto-update.conf)"
 # These files are gitignored and never committed as themselves — copied
 # from their tracked templates only if missing, so a later `git reset --hard`
 # (see scripts/auto-update.sh) can never touch live prices, the real admin
@@ -183,16 +183,16 @@ PYEOF
   fi
 fi
 
-log "4/11 Creating virtualenv and installing Python deps"
+log "4/12 Creating virtualenv and installing Python deps"
 python3 -m venv "$INSTALL_DIR/.venv"
 "$INSTALL_DIR/.venv/bin/pip" install --upgrade pip
 "$INSTALL_DIR/.venv/bin/pip" install -r "$INSTALL_DIR/requirements.txt"
 
-log "5/11 Generating/renewing the self-signed HTTPS certificate"
+log "5/12 Generating/renewing the self-signed HTTPS certificate"
 INSTALL_DIR="$INSTALL_DIR" bash "$INSTALL_DIR/scripts/generate-cert.sh" || \
   warn "Certificate generation failed — the admin panel will fall back to HTTP only until this is fixed."
 
-log "6/11 Installing systemd service"
+log "6/12 Installing systemd service"
 render_template "$FILES_DIR/systemd/currency-dashboard.service" \
   "/etc/systemd/system/${SERVICE_NAME}.service" \
   "INSTALL_DIR=$INSTALL_DIR" "APP_PORT=$APP_PORT" "HTTPS_PORT=$HTTPS_PORT" "RUN_USER=$USER"
@@ -200,7 +200,7 @@ render_template "$FILES_DIR/systemd/currency-dashboard.service" \
 sudo systemctl daemon-reload
 sudo systemctl enable --now "${SERVICE_NAME}"
 
-log "7/11 Firewall: opening the HTTPS admin port"
+log "7/12 Firewall: opening the HTTPS admin port"
 # Deliberately NOT gated on "is ufw active right now" — that check raced
 # harden-system.sh's own `ufw --force enable` a moment earlier on at
 # least one real deploy (ufw reported inactive at this exact instant, so
@@ -220,7 +220,7 @@ else
   log "ufw not installed — skipping (nothing to open)"
 fi
 
-log "8/11 Installing the auto-updater (git pull + cert renewal every 6h)"
+log "8/12 Installing the auto-updater (git pull + cert renewal every 6h)"
 SYSTEMCTL_BIN="$(command -v systemctl)"
 SUDOERS_FILE="/etc/sudoers.d/${SERVICE_NAME}-updater"
 # Rendered to a LOCAL temp file first (not straight to /etc/sudoers.d)
@@ -248,7 +248,7 @@ render_template "$FILES_DIR/systemd/currency-dashboard-updater.timer" \
 sudo systemctl daemon-reload
 sudo systemctl enable --now "${SERVICE_NAME}-updater.timer"
 
-log "9/11 Securing the admin panel: fail2ban jail for repeated failed logins"
+log "9/12 Securing the admin panel: fail2ban jail for repeated failed logins"
 if command -v fail2ban-client >/dev/null 2>&1; then
   render_template "$FILES_DIR/fail2ban/currency-dashboard.filter" \
     "/etc/fail2ban/filter.d/${SERVICE_NAME}.conf"
@@ -259,6 +259,24 @@ if command -v fail2ban-client >/dev/null 2>&1; then
 else
   log "fail2ban not installed (run provision-pi.sh/harden-system.sh first for full hardening) — skipping the admin-login jail"
 fi
+
+log "10/12 Installing the network/reboot reconciler (Wi-Fi + hotspot fallback + reboot from the admin panel)"
+# The Flask app itself never holds sudo/root for this feature — it only
+# ever writes plain files into its own workspace (net_config.json,
+# reboot.request). This root-run daemon (no User= in the unit, same as
+# wifi-ap-fallback.service) polls those files every few seconds and does
+# all the real nmcli/systemctl work to converge the system to match. See
+# scripts/files/network/dashboard-net-apply.sh's header comment for the
+# full design.
+DAEMON_PATH="/usr/local/sbin/dashboard-net-apply"
+render_template "$FILES_DIR/network/dashboard-net-apply.sh" "$DAEMON_PATH" \
+  "INSTALL_DIR=$INSTALL_DIR" "RUN_USER=$USER"
+sudo chmod 755 "$DAEMON_PATH"
+render_template "$FILES_DIR/systemd/dashboard-net-apply.service" \
+  "/etc/systemd/system/dashboard-net-apply.service" \
+  "DAEMON_PATH=$DAEMON_PATH"
+sudo systemctl daemon-reload
+sudo systemctl enable --now dashboard-net-apply
 
 log "Waiting for the dashboard to respond on port ${APP_PORT}"
 for _ in $(seq 1 30); do
@@ -389,7 +407,7 @@ if is_headless; then
   echo "another device's browser instead: http://$(hostname -I 2>/dev/null | awk '{print $1}'):${APP_PORT}/"
 else
 
-log "10/11 Configuring kiosk autostart"
+log "11/12 Configuring kiosk autostart"
 configure_boot_files
 KIOSK_CMD="$CHROMIUM_BIN --kiosk --incognito --noerrant --disable-infobars --disable-session-crashed-bubble --check-for-update-interval=31536000 http://localhost:${APP_PORT}"
 
@@ -545,7 +563,7 @@ esac
 
 fi  # is_headless
 
-log "11/11 Done"
+log "12/12 Done"
 echo "Dashboard service:   sudo systemctl status ${SERVICE_NAME}"
 echo "Dashboard URL:       http://localhost:${APP_PORT}/"
 if [[ -f "$INSTALL_DIR/ssl/cert.pem" ]]; then
@@ -554,6 +572,7 @@ else
   echo "Admin panel (HTTP, no cert yet): http://localhost:${APP_PORT}/admin"
 fi
 echo "Auto-updater:        sudo systemctl status ${SERVICE_NAME}-updater.timer  (runs every 6h if enabled in the admin panel; branch in scripts/auto-update.conf)"
+echo "Network reconciler:  sudo systemctl status dashboard-net-apply  (applies Wi-Fi/hotspot/reboot requests from the admin panel every ~5s)"
 echo
 if is_headless; then
   echo "Headless mode — the service is already running, nothing more to do."

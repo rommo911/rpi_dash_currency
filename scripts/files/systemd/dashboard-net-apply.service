@@ -1,0 +1,13 @@
+[Unit]
+Description=Currency Dashboard Network/Reboot Reconciler
+After=NetworkManager.service
+Wants=NetworkManager.service
+
+[Service]
+Type=simple
+ExecStart={{DAEMON_PATH}}
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
