@@ -185,9 +185,9 @@ DEFAULT_CURRENCIES = [
 ]
 
 DEFAULT_SETTINGS = {
-    "title": "Currency Dashboard",
+    "title": "Prices Dashboard",
     "subtitle": "Current prices",
-    "admin_language": "en",
+    "admin_language": "ar",
     "show_updated_at": True,
 }
 
@@ -738,31 +738,33 @@ DASHBOARD_HTML = """
      title/subtitle hold — long text shrinks via clamp() rather than
      growing this band. */
   .header {
-    flex: 0 0 10vh;
-    height: 10vh;
+    flex: 0 0 auto;
+    min-height: 10vh;
     display: flex;
     flex-direction: column;
     align-items: center;
     justify-content: center;
     text-align: center;
-    overflow: hidden;
+    gap: 1vh;
+    overflow: visible;
   }
   .header h1 {
     margin: 0;
     font-weight: 800;
     letter-spacing: -0.02em;
     font-size: clamp(2rem, 6vh, 5rem);
-    line-height: 1.05;
+    line-height: 1.00;
   }
   .header .sub {
     color: var(--text-dim);
     font-size: clamp(1.1rem, 2.5vh, 2.2rem);
-    margin-top: 0.6vh;
+    margin: 0;
     line-height: 1.1;
+    margin-top: 1vh;
   }
   /* Everything left after the header fills with the price grid. */
   #grid-wrap {
-    margin-top: 4vh;
+    margin-top: 5vh;
     margin-bottom: 2vh;
     flex: 1 1 auto;
     min-height: 0;

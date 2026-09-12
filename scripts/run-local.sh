@@ -55,11 +55,14 @@ if [ -z "${ADMIN_PASSWORD-}" ]; then
   exit 1
 fi
 
+export APP_PORT="${APP_PORT:-5000}"
+export HTTPS_PORT="${HTTPS_PORT:-5443}"
+
 echo
 echo "Starting the dashboard ..."
-echo "  Dashboard: http://127.0.0.1:80/"
-echo "  Admin:     http://127.0.0.1:80/admin  (HTTP only here - HTTPS is set up by scripts/deploy-dashboard.sh on the Pi)"
+echo "  Dashboard: http://127.0.0.1:${APP_PORT}/"
+echo "  Admin:     http://127.0.0.1:${APP_PORT}/admin  (HTTP only here - HTTPS is set up by scripts/deploy-dashboard.sh on the Pi)"
 echo "Press Ctrl+C to stop."
 echo
 
-exec .venv/bin/python app.py
+exec env APP_PORT="$APP_PORT" HTTPS_PORT="$HTTPS_PORT" .venv/bin/python app.py
