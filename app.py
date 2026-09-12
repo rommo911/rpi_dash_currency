@@ -706,7 +706,7 @@ DASHBOARD_HTML = """
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Currency Dashboard</title>
+<title>Prices Dashboard</title>
 <style>
   :root {
     --bg-1: #0f172a;
@@ -1234,6 +1234,19 @@ ADMIN_STYLE = """
     font-size: 0.85rem;
   }
   a.back:hover { color: var(--text-main); }
+  .about-box {
+    margin-top: 28px;
+    padding-top: 12px;
+    border-top: 1px solid var(--card-border);
+    color: var(--text-dim);
+    font-size: 0.78rem;
+    line-height: 1.6;
+    text-align: center;
+  }
+  .about-box strong {
+    color: var(--text-main);
+    font-weight: 700;
+  }
 </style>
 """
 
@@ -1328,6 +1341,12 @@ ADMIN_HTML = ADMIN_STYLE + """
   </div>
 
   <a class="back" href="/">{{ t.back_link }}</a>
+
+  <div class="about-box">
+    <div><strong>About</strong></div>
+    <div>All rights reserved to STN company (STH)</div>
+    <div>Developed and maintained by Rami ZAYAT</div>
+  </div>
 </div>
 <script>
 // Price fields are type="text" (not type="number") specifically to kill
@@ -1458,6 +1477,12 @@ SYSTEM_HTML = ADMIN_STYLE + """
   </div>
 
   <a class="back" href="{{ url_for('admin_page') }}">{{ t.back_to_admin }}</a>
+
+  <div class="about-box">
+    <div><strong>About</strong></div>
+    <div>All rights reserved to STN company (STH)</div>
+    <div>Developed and maintained by Rami ZAYAT</div>
+  </div>
 </div>
 </body>
 </html>

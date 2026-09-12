@@ -113,7 +113,7 @@ fi
 # ---------------------------------------------------------------------------
 log "5/11 Hostname"
 if is_auto; then
-  NEW_HOSTNAME="dashboard"
+  NEW_HOSTNAME="prices-dashboard"
 else
   read -rp "New hostname (leave blank to keep '$(hostname)'): " NEW_HOSTNAME
 fi
