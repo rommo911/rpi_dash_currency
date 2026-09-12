@@ -93,8 +93,8 @@ APP_VERSION = _read_version()
 APP_COMMIT = _read_git_commit()
 APP_VERSION_STRING = f"{APP_VERSION}+{APP_COMMIT}" if APP_COMMIT else APP_VERSION
 
-APP_PORT = int(os.environ.get("APP_PORT", "5000"))
-HTTPS_PORT = int(os.environ.get("HTTPS_PORT", "5443"))
+APP_PORT = int(os.environ.get("APP_PORT", "80"))
+HTTPS_PORT = int(os.environ.get("HTTPS_PORT", "443"))
 # The admin password must come from the process environment. The deployment
 # scripts load it from the project-local .env file before starting the app.
 ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "")
@@ -364,6 +364,10 @@ app = Flask(__name__)
 os.makedirs(FLAGS_DIR, exist_ok=True)
 
 
+def _port_suffix(port: int, default_port: int) -> str:
+    return "" if port == default_port else f":{port}"
+
+
 @app.before_request
 def redirect_admin_to_https():
     # The public dashboard (/, /api/data, /static/*) stays on plain HTTP so
@@ -373,7 +377,7 @@ def redirect_admin_to_https():
     # successfully bound it — see bottom of this file).
     if HTTPS_ENABLED and request.path.startswith("/admin") and request.scheme != "https":
         host = request.host.split(":")[0]
-        target = f"https://{host}:{HTTPS_PORT}{request.full_path}".rstrip("?")
+        target = f"https://{host}{_port_suffix(HTTPS_PORT, 443)}{request.full_path}".rstrip("?")
         # 307 preserves the HTTP method/body, so a POSTed form doesn't
         # silently turn into a GET when it crosses from HTTP to HTTPS.
         return redirect(target, code=307)
@@ -1925,7 +1929,7 @@ if __name__ == "__main__":
 
     HTTPS_ENABLED = https_server is not None
     if HTTPS_ENABLED:
-        print(f"Admin panel (HTTPS): https://{socket.gethostname()}:{HTTPS_PORT}/admin")
+        print(f"Admin panel (HTTPS): https://{socket.gethostname()}{_port_suffix(HTTPS_PORT, 443)}/admin")
     else:
         print(f"No usable SSL cert at {CERT_FILE} — admin panel served over HTTP only. Run scripts/generate-cert.sh to enable HTTPS.")
 

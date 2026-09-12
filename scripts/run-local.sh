@@ -57,8 +57,8 @@ fi
 
 echo
 echo "Starting the dashboard ..."
-echo "  Dashboard: http://127.0.0.1:5000/"
-echo "  Admin:     http://127.0.0.1:5000/admin  (HTTP only here - HTTPS is set up by scripts/deploy-dashboard.sh on the Pi)"
+echo "  Dashboard: http://127.0.0.1:80/"
+echo "  Admin:     http://127.0.0.1:80/admin  (HTTP only here - HTTPS is set up by scripts/deploy-dashboard.sh on the Pi)"
 echo "Press Ctrl+C to stop."
 echo
 

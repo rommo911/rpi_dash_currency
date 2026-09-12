@@ -32,8 +32,8 @@ set -euo pipefail
 REPO_URL="${REPO_URL:-https://github.com/rommo911/rpi_dash_currency.git}"
 INSTALL_DIR="${INSTALL_DIR:-$HOME/currency-dashboard}"
 SERVICE_NAME="currency-dashboard"
-APP_PORT="${APP_PORT:-5000}"
-HTTPS_PORT="${HTTPS_PORT:-5443}"
+APP_PORT="${APP_PORT:-80}"
+HTTPS_PORT="${HTTPS_PORT:-443}"
 HEADLESS="${HEADLESS:-false}"
 LAN_SUBNET="${LAN_SUBNET:-}"
 
@@ -216,7 +216,7 @@ render_template "$FILES_DIR/systemd/currency-dashboard.service" \
 sudo systemctl daemon-reload
 sudo systemctl enable --now "${SERVICE_NAME}"
 
-log "7/13 Firewall: opening the HTTPS admin port"
+log "7/13 Firewall: opening the HTTP and HTTPS ports"
 # Deliberately NOT gated on "is ufw active right now" — that check raced
 # harden-system.sh's own `ufw --force enable` a moment earlier on at
 # least one real deploy (ufw reported inactive at this exact instant, so
@@ -226,26 +226,28 @@ log "7/13 Firewall: opening the HTTPS admin port"
 # whenever ufw is (or becomes) active, so there's nothing to race here.
 if command -v ufw >/dev/null 2>&1; then
   if [[ -n "$LAN_SUBNET" ]]; then
+    sudo ufw allow from "$LAN_SUBNET" to any port "$APP_PORT" proto tcp
     sudo ufw allow from "$LAN_SUBNET" to any port "$HTTPS_PORT" proto tcp
   else
+    sudo ufw allow "$APP_PORT"/tcp
     sudo ufw allow "$HTTPS_PORT"/tcp
   fi
   # A LAN_SUBNET-scoped rule set locks out the emergency hotspot's OWN
   # clients: the AP hands out 192.168.50.0/24 addresses, which are not in
   # "$LAN_SUBNET", so with only the rule above plus harden-system.sh's
-  # equally-scoped 22/$APP_PORT rules, a laptop joined to the fallback AP
-  # can associate, get a lease, and still reach nothing at all — which
-  # defeats the entire point of a fallback whose only job is to keep the
-  # box reachable when the normal LAN is gone. So open the AP subnet to the
-  # same three ports.
+  # equally-scoped 22/$APP_PORT/$HTTPS_PORT rules, a laptop joined to the
+  # fallback AP can associate, get a lease, and still reach nothing at all —
+  # which defeats the entire point of a fallback whose only job is to keep
+  # the box reachable when the normal LAN is gone. So open the AP subnet to
+  # the same ports.
   #
   # Applied unconditionally, NOT only in the LAN_SUBNET branch above: this
   # script is explicitly re-runnable standalone (that's how the auto-updater
   # and manual redeploys both use it), and such a run can easily have an
-  # empty LAN_SUBNET while harden-system.sh's 22/$APP_PORT rules from the
-  # ORIGINAL provision are still subnet-scoped. Gating these on LAN_SUBNET
-  # would silently skip them in exactly that case. Redundant (not harmful)
-  # when everything is already open to Anywhere.
+  # empty LAN_SUBNET while harden-system.sh's 22/$APP_PORT/$HTTPS_PORT rules
+  # from the ORIGINAL provision are still subnet-scoped. Gating these on
+  # LAN_SUBNET would silently skip them in exactly that case. Redundant (not
+  # harmful) when everything is already open to Anywhere.
   #
   # NOT included here: the DHCP port itself. A DHCP DISCOVER is sent from
   # source 0.0.0.0, so a from-subnet rule can never match it — that one has
@@ -255,8 +257,8 @@ if command -v ufw >/dev/null 2>&1; then
   # knows which interface the AP actually came up on. Keep AP_SUBNET below
   # in sync with AP_IFACE_CIDR there.
   AP_SUBNET="192.168.50.0/24"
-  sudo ufw allow from "$AP_SUBNET" to any port "$HTTPS_PORT" proto tcp
   sudo ufw allow from "$AP_SUBNET" to any port "$APP_PORT" proto tcp
+  sudo ufw allow from "$AP_SUBNET" to any port "$HTTPS_PORT" proto tcp
   sudo ufw allow from "$AP_SUBNET" to any port 22 proto tcp
   sudo ufw status 2>/dev/null | grep -q "Status: active" || \
     log "ufw is installed but not active yet — rule was queued and will apply once ufw is enabled."

@@ -459,10 +459,10 @@ wifi_connected_netplan() {
 }
 
 # ufw on a provisioned box is "default deny (incoming)" (harden-system.sh)
-# and only opens 22/5000/5443. systemd-networkd's DHCP server receives on a
+# and only opens 22/80/443. systemd-networkd's DHCP server receives on a
 # normal UDP socket bound to port 67, so every client DISCOVER was hitting
 # INPUT DROP before it ever reached the server — the AP associated fine and
-# 192.168.50.1:5000 was reachable (that port IS allowed), but nobody ever
+# 192.168.50.1:80 was reachable (that port IS allowed), but nobody ever
 # got a lease. ufw's own built-in DHCP rule only covers the CLIENT direction
 # (sport 67 -> dport 68), not inbound server traffic. Confirmed live.
 # Scoped to the AP interface and torn down again on stop, so nothing stays

@@ -21,7 +21,8 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 INSTALL_DIR="${INSTALL_DIR:-$(cd "$SCRIPT_DIR/.." && pwd)}"
 FILES_DIR="$SCRIPT_DIR/files"
-APP_PORT="${APP_PORT:-5000}"
+APP_PORT="${APP_PORT:-80}"
+HTTPS_PORT="${HTTPS_PORT:-443}"
 HEADLESS="${HEADLESS:-false}"
 
 # shellcheck disable=SC1091
@@ -137,6 +138,7 @@ timedatectl status | grep -E 'Time zone|NTP service|System clock synchronized' |
 # ---------------------------------------------------------------------------
 log "7/11 Firewall (ufw)"
 ask "Dashboard port to allow through the firewall [${APP_PORT}]: " "$APP_PORT" APP_PORT
+ask "Admin HTTPS port to allow through the firewall [${HTTPS_PORT}]: " "$HTTPS_PORT" HTTPS_PORT
 ask "Restrict dashboard/SSH access to a LAN subnet (e.g. 192.168.1.0/24)? Leave blank to allow from anywhere: " "" LAN_SUBNET
 
 sudo ufw default deny incoming
@@ -145,9 +147,11 @@ sudo ufw default allow outgoing
 if [[ -n "$LAN_SUBNET" ]]; then
   sudo ufw allow from "$LAN_SUBNET" to any port 22 proto tcp
   sudo ufw allow from "$LAN_SUBNET" to any port "$APP_PORT" proto tcp
+  sudo ufw allow from "$LAN_SUBNET" to any port "$HTTPS_PORT" proto tcp
 else
   sudo ufw allow OpenSSH
   sudo ufw allow "$APP_PORT"/tcp
+  sudo ufw allow "$HTTPS_PORT"/tcp
 fi
 sudo ufw --force enable
 
@@ -215,5 +219,5 @@ sudo fail2ban-client status sshd || true
 
 echo "Handing off to deploy-dashboard.sh ..."
 exec env AUTO_DEFAULT="${AUTO_DEFAULT:-false}" INSTALL_DIR="$INSTALL_DIR" APP_PORT="$APP_PORT" \
-  LAN_SUBNET="${LAN_SUBNET:-}" HEADLESS="$HEADLESS" \
+  HTTPS_PORT="$HTTPS_PORT" LAN_SUBNET="${LAN_SUBNET:-}" HEADLESS="$HEADLESS" \
   bash "$INSTALL_DIR/scripts/deploy-dashboard.sh"
