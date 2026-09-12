@@ -137,7 +137,7 @@ render_template_user() {
 # always converges on exactly the current template content, never leaves
 # a stale duplicate, and never has to pattern-match the PREVIOUS content
 # to know what to replace (that pattern-matching is exactly what caused
-# the startx self-heal bug this replaces — see CLAUDE.md). Backs the file
+# the startx self-heal bug this replaces ). Backs the file
 # up (once, timestamped) only if it's actually about to change. Creates
 # the file (and its parent dir) if it doesn't exist yet.
 # Pass --sudo for a root-owned file (e.g. /boot/firmware/config.txt) —

@@ -179,7 +179,7 @@ sudo systemctl enable --now unattended-upgrades
 # so this cuts disk usage from routine info/debug noise without starving
 # anything that depends on real-time log-following. The dashboard's own
 # security-relevant log line is deliberately emitted at ERROR (see
-# app.py/CLAUDE.md) specifically so it still gets *stored* under this
+# app.py) specifically so it still gets *stored* under this
 # policy and the admin-login fail2ban jail keeps working.
 render_template "$FILES_DIR/journald/10-currency-dashboard-limits.conf" \
   /etc/systemd/journald.conf.d/10-currency-dashboard-limits.conf

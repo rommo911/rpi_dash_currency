@@ -115,7 +115,7 @@ _admin_failures_lock = threading.Lock()
 _admin_failures = {}  # ip -> [failure timestamps]
 
 # Logging: errors only, everywhere, on purpose (matches the system-wide
-# journald policy provision-pi.sh sets up — see CLAUDE.md). Two pieces:
+# journald policy provision-pi.sh sets up ). Two pieces:
 #  - The root logger (and "werkzeug" specifically, which otherwise logs
 #    every single request at INFO — that's the noisy "GET /api/data ...
 #    200 -" line) is capped at ERROR, so routine traffic never gets logged

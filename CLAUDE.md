@@ -1,815 +1,93 @@
 # Currency Dashboard — CLAUDE.md
 
-## What this is
+Flask kiosk app for a Raspberry Pi / Orange Pi Zero 3 (Armbian): a public
+dashboard of admin-managed currency prices, plus a password-protected admin
+panel. No live FX, no database, no build step.
 
-A single-file Flask app for a Raspberry Pi kiosk display: shows a set of
-currencies with **static, admin-managed prices** (no live FX conversion,
-no external API calls at runtime). A password-protected `/admin` panel
-lets you edit prices, add/remove currencies, upload or auto-suggest flag
-icons, edit the dashboard title/subtitle, switch the admin UI language
-(English/Arabic, RTL), and toggle the "last updated" footer.
+**`docs/NOTES.md` holds the long-form rationale. Every rule below marked
+(NOTES) is backed by a bug found live on a real board — read that entry before
+changing the thing it describes.**
 
-`/admin` is served over **self-signed HTTPS** (auto-generated and
-auto-renewed) with several brute-force/CSRF protections layered on top; the
-dashboard itself always stays on plain HTTP for the kiosk. The deployed app
-can auto-update itself from git every 6 hours — opt-in via an "Enable
-automatic updates" checkbox in the admin panel, or on demand via a "Check
-for updates now" button there — and shows the Pi's hostname/IP on-screen
-periodically. The admin panel also shows the currently deployed version
-(`VERSION` file + git commit). See "Architecture notes" below for how each
-of these actually works.
+## Layout
 
-Provisioning a fresh Pi is a **three-stage script chain**
-(`provision-pi.sh` → `harden-system.sh` → `deploy-dashboard.sh`, each
-`exec`-ing into the next), runnable either interactively or fully
-non-interactively via `provision-pi.sh --auto_default`. Every config file
-any of these scripts installs (systemd units, fail2ban, sudoers, kiosk
-autostart, boot config) is a real file under `scripts/files/`, not text
-authored inline in the script — see "Provisioning architecture" below.
+| Path | What |
+|---|---|
+| `app.py` | The whole app — routes *and* all HTML/CSS/JS as `render_template_string` strings. No `templates/`, no asset pipeline. |
+| `data.json` | Currencies + settings, written by the app. Gitignored, seeded from `data.default.json`. |
+| `.env` | `ADMIN_PASSWORD`. Gitignored, seeded from `.env.example`. |
+| `net_config.json` | Desired Wi-Fi/hotspot state, mode 600 (plaintext PSKs). Gitignored, seeded from `net_config.default.json`. |
+| `auto-update.enabled` / `.check-now` | Flag files — presence *is* the boolean. |
+| `VERSION` | Bumped by hand, shown in the admin panel. |
+| `ssl/` | Self-signed cert from `scripts/generate-cert.sh`. Gitignored. |
+| `static/flags/` | Flag PNGs, fetched from flagcdn.com or uploaded. |
+| `scripts/lib.sh` | The file-install helpers every script uses. |
+| `scripts/files/` | Every config file installed anywhere on the system, as a real file. |
 
-Repo: https://github.com/rommo911/rpi_dash_currency
+## Provisioning
 
-## File structure
+`provision-pi.sh` (network + clone only) → `harden-system.sh` (apt, user, ufw,
+ssh, fail2ban, journald) → `deploy-dashboard.sh` (venv, cert, systemd, updater,
+kiosk, net-apply daemon). Each `exec`s into the next; `--auto_default` runs the
+chain unattended. `deploy-dashboard.sh` is also safe standalone — that's how
+redeploys and the auto-updater use it.
 
-```
-app.py                        Entire app: Flask routes + HTML/CSS/JS templates
-                               embedded as Python strings (render_template_string).
-                               No separate templates/ or static build step.
-config.py                     ADMIN_PASSWORD (plaintext, HTTP Basic Auth).
-                               GITIGNORED — never committed as itself. Created
-                               on first run/deploy from config.py.example.
-config.py.example             Tracked template for config.py (placeholder
-                               password). Edit config.py, not this file.
-data.json                     Runtime state: currencies list + settings.
-                               Written by the app itself (save_data()).
-                               Auto-migrates older schema versions on load.
-                               GITIGNORED, same reasoning as config.py —
-                               created on first run/deploy from
-                               data.default.json.
-data.default.json             Tracked template for data.json (the shipped
-                               default currencies/settings).
-net_config.json                Runtime Wi-Fi/hotspot DESIRED state written
-                               by the admin panel (save_net_config()) and
-                               polled by the dashboard-net-apply daemon.
-                               GITIGNORED — same reasoning as data.json,
-                               plus it holds plaintext Wi-Fi/AP PSKs, so
-                               it's chmod 600 everywhere it's written.
-                               Created on deploy from
-                               net_config.default.json if missing.
-net_config.default.json        Tracked template for net_config.json — the
-                               Wi-Fi SSIDs/passwords and AP-fallback
-                               credentials a freshly provisioned board
-                               comes up with. Without it a fresh board has
-                               no known networks AND no hotspot, i.e. it is
-                               unreachable headless. NOTE: this file
-                               contains real PSKs in a PUBLIC repo; see
-                               "Things to watch for".
-VERSION                        Tracked, single line, e.g. "1.1.0". Bump by
-                               hand for a meaningful release — nothing
-                               bumps it automatically. app.py reads it at
-                               startup (_read_version()) and shows it (plus
-                               the current git commit, best-effort) in the
-                               admin panel's Updates card.
-auto-update.enabled            GITIGNORED flag file — its mere presence
-                               means the admin panel's "Enable automatic
-                               updates" checkbox is checked.
-                               admin_save_all() in app.py creates/removes
-                               it; scripts/auto-update.sh checks for it
-                               before doing any git/network work on a
-                               scheduled (timer) run.
-auto-update.check-now          GITIGNORED flag file, one-shot. Touched by
-                               the admin panel's "Check for updates now"
-                               button (admin_check_update_now() in app.py),
-                               which also starts the updater service
-                               immediately. auto-update.sh deletes it after
-                               one run, regardless of the enabled flag
-                               above — a manual click always does
-                               something.
-requirements.txt               Just Flask.
-static/flags/                 Flag icon PNGs. 4 ship with the repo
-                               (sy/us/eu/tr.png). More get added here
-                               automatically (fetched from flagcdn.com) or
-                               via admin upload when a currency is added.
-ssl/                           cert.pem / key.pem / cert.meta for the HTTPS
-                               admin listener. GITIGNORED (private key) —
-                               generated by scripts/generate-cert.sh.
+## Rules that bite
 
-scripts/lib.sh                 Shared helpers sourced by every other
-                               script — log()/warn(), is_auto()/ask() (for
-                               --auto_default), and the file-installation
-                               primitives (render_template,
-                               render_template_user, ensure_block_in_file,
-                               ensure_tokens_in_cmdline). See "Provisioning
-                               architecture" below — this file is the
-                               whole reason config content lives under
-                               scripts/files/ instead of inline in scripts.
-scripts/files/                 Every installed config file, as a real
-                               file, grouped by purpose (systemd/,
-                               sudoers/, fail2ban/, journald/, apt/, ssh/,
-                               network/, kiosk/, boot/). Scripts only
-                               render/copy these via scripts/lib.sh — if
-                               you need to change what gets installed,
-                               edit the file here, not a heredoc in a
-                               script (there shouldn't be any left).
-scripts/provision-pi.sh       STAGE 1/3. The one file you copy onto a
-                               fresh SD card before anything else exists
-                               there. Does ONLY networking (check for
-                               existing internet, else loop on interactive
-                               Wi-Fi setup via nmcli, or a fixed
-                               SSID "dashboard"/password "123456789"
-                               profile in --auto_default mode) and getting
-                               the repo cloned — nothing else. Then execs
-                               into harden-system.sh. Works both copied
-                               alone (clones the repo itself) and run from
-                               inside an already-cloned checkout.
-scripts/harden-system.sh      STAGE 2/3 (NEW). Everything provision-pi.sh
-                               used to also do: optional bloat removal,
-                               apt update/upgrade, security tooling, admin
-                               user, hostname, timezone/NTP, ufw firewall,
-                               SSH hardening (sshd_config.d drop-in — see
-                               below), fail2ban (SSH jail), unattended-
-                               upgrades, journald log limits, and the
-                               optional Wi-Fi emergency-AP fallback (see
-                               wifi-ap-fallback.sh below) — reachable here,
-                               not in provision-pi.sh, because it needs
-                               the repo already cloned, which is now
-                               guaranteed true from the start of this
-                               stage. In --auto_default mode: creates a
-                               new sudo user "dashboard" with the current
-                               user's password hash copied over (no
-                               password prompted or invented — see
-                               "Provisioning architecture"), sets the
-                               hostname to "dashboard", and installs the
-                               AP fallback with SSID "dashboardAP" /
-                               password "123456789" automatically. Execs
-                               into deploy-dashboard.sh when done.
-scripts/deploy-dashboard.sh   STAGE 3/3 — also safe to run entirely
-                               standalone/re-run any time (that's how the
-                               admin-panel-gated auto-updater and manual
-                               redeploys both use it). Clones/updates the
-                               repo, creates data.json/config.py/
-                               auto-update.conf from their templates if
-                               missing — the first time config.py is
-                               created, OPTIONALLY prompts (twice, silent,
-                               skipped entirely under --auto_default or
-                               any non-TTY invocation) for a real admin
-                               password instead of leaving the placeholder,
-                               written via a small python3 heredoc using
-                               repr() + explicit UTF-8 encoding (not sed —
-                               needs to handle quotes/backslashes/
-                               non-ASCII correctly; keep the
-                               encoding="utf-8" args on both
-                               read_text/write_text if you touch this) —
-                               also creates auto-update.enabled (default
-                               ON) but ONLY on that same first-deploy
-                               condition, never on a later redeploy, so a
-                               redeploy can't silently re-enable it after
-                               an admin explicitly unchecked it in the
-                               panel — then builds the venv, generates the
-                               HTTPS cert, installs the systemd service
-                               (with APP_PORT/HTTPS_PORT env vars), opens
-                               the HTTPS port through ufw, installs the
-                               auto-updater (sudoers rule for BOTH
-                               `systemctl restart <service>` and
-                               `systemctl start <service>-updater.service`
-                               — the second one is what the admin panel's
-                               "check now" button runs, keep both in sync
-                               with app.py's admin_check_update_now() if
-                               either changes — + a systemd timer, every
-                               6h) and a fail2ban jail for admin
-                               brute-force attempts, then sets
-                               up kiosk-mode Chromium autostart. Kiosk is
-                               ALWAYS on by default — headless mode (skip
-                               Chromium) is opt-in only via HEADLESS=true,
-                               never guessed. Also forces HDMI output on,
-                               disables console blanking, and silences
-                               kernel/systemd boot messages (all via one
-                               managed block appended to config.txt +
-                               tokens appended to cmdline.txt — see
-                               "Provisioning architecture"). On the
-                               console+X path (no labwc/wayfire/LXDE) it
-                               also installs matchbox-window-manager,
-                               required for Chromium's --kiosk fullscreen
-                               request to actually be honored — see
-                               "Things to watch for" below.
-scripts/wifi-ap-fallback.sh   Adds an emergency AP fallback on top of an
-                               EXISTING NetworkManager Wi-Fi connection —
-                               it doesn't configure normal Wi-Fi itself,
-                               provision-pi.sh's/harden-system.sh's
-                               network step (or nmcli/raspi-config by
-                               hand) has to do that first. Installs a
-                               small watchdog (/usr/local/sbin/
-                               wifi-ap-fallback, a real file at
-                               scripts/files/network/
-                               wifi-ap-fallback-watchdog.sh) as its own
-                               systemd service (wifi-ap-fallback,
-                               deliberately NOT prefixed with
-                               currency-dashboard — it's Pi network infra,
-                               independent of the app) that polls nmcli
-                               device state every 15s: if the primary
-                               connection isn't in state 100, it retries
-                               for up to 30s, then brings up an
-                               "Emergency-AP" nmcli AP profile
-                               (192.168.50.1/24, WPA2-PSK) so the Pi stays
-                               reachable; the instant the primary
-                               reconnects, the AP drops automatically —
-                               no manual intervention either direction.
-                               Idempotent/re-runnable: called optionally
-                               from harden-system.sh, but also safe to run
-                               standalone any time later to change the AP
-                               SSID/password or refresh the watchdog unit.
-scripts/generate-cert.sh      Generates/renews the self-signed HTTPS cert
-                               (SAN = current hostname, hostname.local,
-                               localhost, current LAN IP, 127.0.0.1).
-                               Idempotent — no-op unless the cert is
-                               missing, within 30 days of expiring, or the
-                               hostname/IP it was issued for has changed.
-scripts/auto-update.sh        Runs every 6h via a systemd timer: git fetch
-                               + fast-reset to the configured branch if it's
-                               ahead, reinstall deps if requirements.txt
-                               changed, renew the cert if needed, restart
-                               the service if anything changed.
-scripts/auto-update.conf(.example)
-                               BRANCH=main (or whatever branch to track).
-                               auto-update.conf is gitignored — your choice
-                               here is never touched by an update.
-scripts/disable-kiosk.sh      Maintenance-mode toggle: stops+disables the
-                               service and the updater timer, removes the
-                               managed kiosk-autostart block from
-                               .bash_profile (console+X path only, via
-                               lib.sh's ensure_block_in_file --remove--),
-                               and kills any running Xorg/chromium/
-                               matchbox. No separate "enable" script —
-                               re-running deploy-dashboard.sh restores
-                               everything.
-scripts/run-local-windows.bat Windows batch script: creates/reuses a .venv,
-                               installs requirements.txt, creates data.json/
-                               config.py from their templates if missing,
-                               runs app.py for local testing at
-                               http://127.0.0.1:5000/.
-README.md                     Full user-facing setup/deploy instructions.
-```
+**Installed files.** Everything installed to the system is a real file under
+`scripts/files/`, put in place via `lib.sh` (`render_template`,
+`ensure_block_in_file`, `ensure_tokens_in_cmdline`). No heredoc into `/etc`, no
+`sed -i` on an installed file — two separate bugs came from hand-rolled `sed`
+idempotency checks (NOTES).
 
-No `templates/`, no `static/css` or `static/js` — everything HTML/CSS/JS
-lives inside `app.py` as `DASHBOARD_HTML` and `ADMIN_HTML` triple-quoted
-strings rendered with `render_template_string`. Flask's default static
-folder (`static/`) is used only for flag images.
+**Git.** Never re-track `data.json` / `config.py` / `net_config.json`, and
+never reach for `skip-worktree`. Every update path runs `git rm --cached` on
+them before `fetch` + `reset --hard`, because a tracked-and-modified file is
+silently *deleted* by `reset --hard` (NOTES).
 
-## Provisioning architecture
+**Networking is zero-privilege.** Flask never holds sudo. It writes desired
+state to `net_config.json` / `reboot.request`; the root daemon
+`/usr/local/sbin/dashboard-net-apply` polls every 5s, reconciles through nmcli
+or netplan (auto-detected per tick), and publishes observed state to
+`/run/dashboard-net/status.json`. Don't add a `sudo` call to `app.py`.
 
-This section explains `scripts/lib.sh` and `scripts/files/` — read this
-before touching any provisioning/deploy script.
+**Emergency AP.** The drop-in stays `/etc/systemd/network/05-dashboard-ap.network`
+— networkd applies only the first matching file *by filename*, so anything
+numbered above netplan's `10-` loses. ufw must open UDP/67 interface-scoped (a
+DHCP DISCOVER's source is `0.0.0.0`, so no from-subnet rule can match). Both
+were independently fatal and looked identical: client associates, never gets an
+IP (NOTES).
 
-- **Every installed config file is a real file under `scripts/files/`,
-  never heredoc text inside a `.sh` file, and no script edits an
-  installed file with `sed`.** This is a deliberate rule, not a style
-  preference: the two real bugs described at length further down (the
-  `startx` self-heal regression, the `\b` vs `\s*$` match bug) both came
-  from a bespoke, hand-rolled `sed`/`grep` idempotency check with its own
-  failure mode. Centralizing file installation into a couple of
-  well-tested functions in `scripts/lib.sh` makes that whole bug class
-  structurally impossible instead of something to get right by hand each
-  time. If you need a new installed file: add it under `scripts/files/`
-  and call one of the functions below — don't reach for
-  `sudo tee ... <<EOF` or `sed -i` anywhere else in this repo.
-- **`render_template <template> <dest> [KEY=VALUE ...]`** (and its
-  no-sudo twin `render_template_user`, for files owned by the invoking
-  user rather than root) — for files a script fully owns: reads the
-  template, replaces every `{{KEY}}` token via plain bash string
-  substitution (no `sed`, no external dependency like `envsubst`), and
-  overwrites the destination. Always just render-and-overwrite, no
-  existence checks — identical input always produces identical output,
-  so there's nothing to check-before-writing. Used for systemd units,
-  fail2ban filter/jail, sudoers, journald/apt drop-ins, xinitrc, labwc/
-  LXDE autostart.
-- **`ensure_block_in_file [--sudo] <file> <marker> <template>
-  [KEY=VALUE ...]`** — for files the script only ADDS a section to
-  (`.bash_profile`, `wayfire.ini`, `config.txt`) because they also carry
-  unrelated content (other dotfile setup, other desktop config, other
-  Pi-model-specific firmware settings) that must never be touched. Wraps
-  the rendered template in `# BEGIN <marker>` / `# END <marker>`
-  comments; any existing region with that marker is found and removed
-  first (wherever it is in the file), then the fresh one is appended —
-  so re-running always converges on exactly the current template
-  content, and never needs to pattern-match the PREVIOUS content to know
-  what to replace (that pattern-matching is exactly what caused the
-  `startx` self-heal bug below). Backs the file up (once, timestamped)
-  only if it's actually about to change. Pass `template` as the literal
-  string `--remove--` to strip the block entirely instead of replacing
-  it — `disable-kiosk.sh` uses this to neutralize kiosk autostart, which
-  directly fixes the empty-`if`-body bug class by construction: the
-  block is always removed as one complete, independently-valid unit,
-  never partially edited in place.
-- **`ensure_tokens_in_cmdline [--sudo] <file> <tokens-file>`** —
-  `cmdline.txt` is a single line with no comment syntax at all, so
-  `ensure_block_in_file`'s `# BEGIN`/`# END` comment lines would corrupt
-  it (the bootloader doesn't understand extra lines there). This instead
-  reads whitespace-separated tokens from a plain repo file and appends
-  whichever aren't already present on the line, rewriting it as a single
-  line — still pure bash, no `sed`.
-- **`--sudo` on the last two**: `config.txt`/`cmdline.txt` are root-owned
-  but world-*readable*, so reads happen as the invoking user and only the
-  backup + final write go through `sudo`. `.bash_profile`/`wayfire.ini`
-  are user-owned, so they're called without `--sudo`. Forgetting `--sudo`
-  on a root-owned destination fails loudly (permission denied on the
-  write), it doesn't silently corrupt anything.
-- **`is_auto`/`ask <prompt> <default> <varname>`**: `is_auto` is true
-  when `AUTO_DEFAULT=true` is in the environment (set by
-  `provision-pi.sh --auto_default`, exported through the whole
-  `harden-system.sh`/`deploy-dashboard.sh` handoff chain). `ask()` wraps
-  a prompt so it silently resolves to its default in auto mode instead of
-  blocking on `read` — used wherever the manual-mode default and the
-  desired auto-mode value are the same (bloat cleanup, firewall LAN
-  subnet/port). Where auto mode's desired value is genuinely DIFFERENT
-  from the manual default (hostname, user creation, AP-fallback
-  credentials), the scripts branch on `is_auto` explicitly instead of
-  forcing that through `ask()` — don't try to unify those, the values
-  really do differ by mode.
-- **`sshd` hardening moved from `sed`-editing the main `sshd_config` to a
-  `scripts/files/ssh/currency-dashboard-hardening.conf` drop-in under
-  `/etc/ssh/sshd_config.d/`.** Debian's default `sshd_config` already
-  `Include`s that directory near the top of the file, and for most
-  `sshd_config` directives the FIRST occurrence in the effective config
-  wins — so the drop-in's `PermitRootLogin no` / `PasswordAuthentication
-  yes` / `MaxAuthTries 4` / `LoginGraceTime 30` take effect the same way
-  the old in-place edits used to, without ever touching a line the
-  script doesn't own. Untested against a live Pi as of this rewrite
-  (this session was explicitly asked not to touch the Pi) — verify this
-  actually takes effect (`sshd -T | grep -i permitrootlogin` etc.) the
-  first time you provision with it.
-- **`--auto_default` user-account handling**: creates a NEW sudo user
-  `dashboard` and copies the CURRENT user's existing password hash to it
-  directly (`getent shadow "$USER" | cut -d: -f2` → `usermod -p`) rather
-  than renaming the logged-in account or inventing/prompting for a new
-  password. This was a deliberate choice after considering the
-  alternatives: renaming the account the script is currently running as
-  over SSH is fragile (Linux refuses to rename a user with active
-  processes owned by it, which includes the SSH session itself), and
-  generating/prompting a new password would violate the "no password
-  change" part of the spec. The original account is left completely
-  untouched, so there's no lockout risk either way.
+**Wi-Fi passwords.** A blank password field means "keep the saved one" and
+resolves only for an *unchanged* SSID, keyed by SSID rather than slot position.
+Open networks are rejected outright (NOTES).
 
-## Architecture notes
+**HTTPS.** Build the listener *without* `make_server(ssl_context=...)`; wrap the
+socket manually with `do_handshake_on_connect=False`, or one stalled client
+wedges `accept()` for everyone (NOTES).
 
-- **Two pages**: `/` (public dashboard, read-only, no auth) and `/admin`
-  (HTTP Basic Auth, password from `config.py`). `/api/data` is the public
-  JSON endpoint the dashboard polls every 3 seconds (now also carries
-  `hostname`/`ip`, used by the on-screen overlay — see below).
-- **Dual HTTP/HTTPS listeners, one Flask app**: `__main__` binds two
-  separate `werkzeug.serving.make_server` instances in daemon threads —
-  plain HTTP on `APP_PORT` (default 5000) and, only if `ssl/cert.pem` +
-  `ssl/key.pem` both load successfully, HTTPS on `HTTPS_PORT` (default
-  5443). A `before_request` hook redirects (307, preserves method/body)
-  any `/admin*` request that arrives over HTTP to the HTTPS URL — but only
-  when `HTTPS_ENABLED` is actually true (the listener bound and the cert
-  loaded without error), so a broken/missing cert degrades to "admin over
-  HTTP" instead of locking anyone out. `/`, `/api/data`, and `/static/*`
-  are never redirected — the kiosk browser (`http://localhost:<APP_PORT>`)
-  never touches HTTPS or the self-signed cert.
-- **The HTTPS listener is built WITHOUT `make_server`'s `ssl_context=`
-  argument, on purpose — this is load-bearing, not a style choice.**
-  Passing `ssl_context=` wraps the *listening* socket with the default
-  `do_handshake_on_connect=True`, which makes the TLS handshake run
-  *synchronously inside the shared `accept()` call*, before
-  `threaded=True` ever hands a connection to a worker thread. One client
-  whose handshake stalls — a browser retrying against a stale cert, a
-  network blip, anything that opens the TCP connection and doesn't
-  immediately complete the handshake — wedges `accept()` forever, and
-  with it every other client, including `curl` from `127.0.0.1` on the
-  same box. This was a real, live bug: the admin panel went
-  `ERR_TIMED_OUT` for everyone after a Wi-Fi network change, reproduced
-  with a standalone script (one stuck raw TCP connection made a second,
-  unrelated client hang indefinitely), and confirmed that `socket.accept()`
-  does *not* propagate a listening socket's `settimeout()` value to
-  accepted sockets (only forces blocking mode) — so "just set a timeout on
-  the listening socket" does not fix it. `sudo systemctl restart
-  currency-dashboard` "fixes" the symptom every time (a fresh process has
-  no wedged connection) without fixing the underlying flaw — don't take
-  that as evidence it isn't a real bug. The actual fix: build with no
-  `ssl_context`, then manually
-  `https_server.socket = ssl_ctx.wrap_socket(https_server.socket, server_side=True, do_handshake_on_connect=False)`
-  and set `https_server.ssl_context = ssl_ctx` — this defers the
-  handshake to the first read/write on each accepted connection, which
-  happens inside that connection's own worker thread, so a stuck client
-  only ever blocks itself. Verified with the same repro before/after.
-  Don't revert to the plain `ssl_context=` kwarg on `make_server` for the
-  HTTPS listener.
-- **HTTPS cert**: generated/renewed by `scripts/generate-cert.sh` (SAN =
-  hostname, `hostname.local`, `localhost`, current LAN IP, 127.0.0.1),
-  called once by `deploy-dashboard.sh` right after cloning and then every
-  run of `scripts/auto-update.sh` (~every 6h). It's a no-op unless the
-  cert is missing, expiring within 30 days, or the hostname/IP changed
-  since issuance (tracked in `ssl/cert.meta`) — cheap to call unconditionally.
-- **Admin brute-force protection**, all in `app.py`, defense in depth:
-  1. In-process lockout (`_admin_failures`, `ADMIN_MAX_FAILURES=5` per
-     `ADMIN_LOCKOUT_WINDOW=300s`, IP-keyed, `threading.Lock`-guarded) — 429
-     once tripped, even for a subsequently-correct password. Resets on
-     process restart; that's acceptable, it's a single-instance app.
-  2. `require_admin_auth()` logs `"Failed admin login from <ip>"` via the
-     `admin-auth` logger on every bad attempt — this exact message is what
-     the `currency-dashboard` fail2ban filter/jail (installed by
-     `deploy-dashboard.sh` from `scripts/files/fail2ban/`, journald
-     backend) matches on to ban at the firewall level. Don't change the
-     wording without updating `scripts/files/fail2ban/
-     currency-dashboard.filter`'s regex too.
-  3. `hmac.compare_digest()` for the password comparison (constant-time;
-     don't revert to `==`).
-- **CSRF**: every state-changing admin form carries a hidden `csrf_token`
-  field, checked by `check_csrf()` before any handler does real work. No
-  session/cookie exists (plain Basic Auth), so the token is a fixed HMAC
-  (`CSRF_SECRET`, random per process start) over a constant string rather
-  than a per-request nonce — it doesn't need to rotate, its only job is to
-  be unreadable to a cross-origin page, which the Same-Origin Policy
-  already guarantees. If you add a new admin POST route, give it a
-  `csrf_token` hidden field and a `check_csrf()` call, same pattern as the
-  existing four.
-- **Security headers** (CSP, X-Frame-Options, X-Content-Type-Options,
-  Referrer-Policy) are set in `after_request` for every response. The CSP
-  allows `'unsafe-inline'` for style/script because the templates use
-  inline `<style>`/`<script>` blocks and inline event handlers
-  (`onclick`, `onchange`) — that's intentional, not an oversight; a nonce-
-  based CSP would need a bigger template rework.
-- **Logging is errors-only, deliberately, at both the app and system
-  level** — see the "Things to watch for" entry below before changing any
-  log level in this app; the two layers (journald's `MaxLevelStore` and
-  `security_log`'s level) depend on each other in a non-obvious way.
-- **data.json shape**:
-  ```json
-  {
-    "currencies": [
-      {"code": "SYP", "name": "...", "symbol": "", "price": 130.0,
-       "flag": "/static/flags/sy.png", "enabled": true}
-    ],
-    "settings": {
-      "title": "...", "subtitle": "...",
-      "admin_language": "en" | "ar",
-      "show_updated_at": true
-    },
-    "updated_at": 1788788157
-  }
-  ```
-  `load_data()` auto-migrates missing/old keys and writes the result back,
-  so it's always safe to call — never read the file directly.
-- **i18n**: `TRANSLATIONS` dict (`en`/`ar`) covers only the `/admin` UI
-  chrome (labels, buttons, error messages). Currency names and the
-  dashboard title/subtitle are free text the admin typed — never
-  auto-translated, by design (the user explicitly asked for this). The
-  **public dashboard's "Last updated" label is the one exception** — it's
-  UI chrome the app generates, not admin-typed content, so it DOES follow
-  `admin_language` (added on request): `/api/data` now includes
-  `admin_language`, and `DASHBOARD_HTML`'s JS picks the label from a small
-  `LAST_UPDATED_LABEL` object (`{en: 'Last updated', ar: 'آخر تحديث'}`).
-  The date/time next to it is built manually (`formatDateTime()`, fixed
-  `HH:MM:SS DD/MM/YYYY`, zero-padded) instead of
-  `toLocaleTimeString()`/`toLocaleString()` — those vary unpredictably by
-  browser/OS locale, wrong for a wall-mounted kiosk that needs a
-  consistent, predictable format regardless of what the browser's locale
-  happens to be set to.
-- **Single save button**: `/admin` has ONE form covering dashboard
-  settings + every currency row. Per-row "Remove" buttons are separate,
-  submitted via the HTML5 `form="delete-{code}"` attribute pointing at a
-  tiny standalone `<form>` elsewhere in the DOM — this is intentional, not
-  a bug, because nested `<form>` tags are invalid HTML and per-row forms
-  used to be a UX complaint the user asked to be removed. If touching the
-  admin template, keep this pattern; don't nest a `<form>` inside the
-  big save-all `<form>`.
-- **Validation** (`clean_text()`, `parse_price()`): server-side length
-  caps by *character count* (fair to Arabic — Python strings are code
-  points), strips control chars/newlines, rejects `inf`/`nan`/negative/
-  oversized prices. Client-side `maxlength`/`max` attrs mirror the same
-  limits for instant feedback but are not the actual enforcement. Price
-  inputs are `type="text" inputmode="decimal"` with a hand-written
-  `filterDecimalInput()` JS filter (not `type="number"`) specifically to
-  kill the native spinner/scroll-wheel behavior, which was a reported
-  annoyance. Displayed with 3 decimal places (`maximumFractionDigits: 3`
-  in `fmt()`) on the dashboard.
-- **Flag icons**: `fetch_suggested_flag()` guesses an ISO country code
-  from the currency code (`COUNTRY_OVERRIDES` dict for exceptions like
-  EUR→eu, else first two letters lowercased) and fetches once from
-  flagcdn.com, caching the PNG locally forever. Uploads go through
-  `save_uploaded_flag()` (extension allowlist: png/jpg/jpeg/webp/svg).
-  Deleting a currency also deletes its flag file (`delete_flag_file()`,
-  path-traversal-guarded to stay inside `static/flags/`).
-- **Client-side XSS**: the dashboard's JS builds currency cards via
-  `innerHTML` from `/api/data` JSON (not server-rendered per-item, since
-  it needs to auto-refresh without a full reload). Everything interpolated
-  into that HTML MUST go through `esc()` (full escaper incl. quotes) and,
-  for the flag `src=` specifically, `safeFlagSrc()` (origin/path allowlist
-  on top of escaping). If you add new fields to card rendering, escape
-  them the same way — don't reintroduce raw interpolation.
-- **On-screen hostname/IP overlay**: `#hostinfo`, fixed bottom-left, shows
-  **once** — 10s, starting 2 minutes after page load — not a repeating
-  cycle. `hostInfoShown` (a plain JS variable) latches it after the first
-  show; nothing resets that until the page itself reloads, which for the
-  kiosk only happens on a service restart or reboot. Uses
-  `el.textContent = ...`, not `innerHTML` — no `esc()` needed there.
-  Sourced from `hostname`/`ip` on the `/api/data` payload
-  (`get_lan_ip()`: UDP-connects to 8.8.8.8 without sending a packet, just
-  to read back the outbound-route local address; falls back to
-  `socket.gethostbyname(gethostname())`, then `127.0.0.1`). The 2-minute
-  delay is safe against "data not loaded yet" — `.xinitrc` already blocks
-  launching Chromium until `/api/data` responds, so by 120s post-page-load
-  it's had dozens of successful 3s-interval polls.
-- **Auto-update control lives in flag FILES, not `data.json`** — a
-  deliberate choice (matches how the rest of this project keeps runtime
-  state separate from tracked templates). `AUTO_UPDATE_ENABLED_FLAG`
-  (`auto-update.enabled`) is a boolean-by-presence: the "Enable automatic
-  updates" checkbox in `admin_save_all()` creates/removes it, and
-  `scripts/auto-update.sh` treats its absence as "scheduled run is a
-  no-op." `AUTO_UPDATE_CHECK_NOW_FLAG` (`auto-update.check-now`) is a
-  one-shot override: `admin_check_update_now()` touches it and fires
-  `subprocess.Popen(["sudo", "-n", "systemctl", "start",
-  f"{SERVICE_NAME}-updater.service"], ...)` — deliberately **not**
-  waiting for it (`Popen`, not `run`/`check_call`): if an update is
-  actually applied, the updater restarts this very Flask process partway
-  through, so nothing in the request handler can safely block on it.
-  `auto-update.sh` deletes the check-now flag after one run regardless of
-  the enabled flag, so a manual click always does something even when
-  auto-update is otherwise disabled. If you rename `SERVICE_NAME` (also
-  hardcoded to `"currency-dashboard"` in `deploy-dashboard.sh`, not an env
-  var — the two must match), update both.
-- **Versioning**: `VERSION` (repo root, one line, e.g. `1.1.0`) is read
-  once at import (`_read_version()`) and shown in the admin panel's
-  Updates card alongside the current git commit (`_read_git_commit()`,
-  best-effort via `git rev-parse --short HEAD`, `None` if git or `.git`
-  isn't available — e.g. a zip-deployed copy). Nothing bumps `VERSION`
-  automatically; bump it by hand for a release that's worth distinguishing.
+**Logging.** `security_log` uses `.error()` because journald is pinned to
+`MaxLevelStore=err` — anything lower is never stored, so fail2ban never sees
+it. The jail matches the literal string `Failed admin login from <ip>`.
 
-## Things to watch for
+**Admin routes.** Every state-changing admin POST needs a hidden `csrf_token`
+plus a `check_csrf()` call. Auth is Basic; the comparison is
+`hmac.compare_digest`. Validation is server-side (`clean_text`, `parse_price`);
+client-side `maxlength`/`min`/`max` only mirror it for feedback.
 
-- **Dev-server restarts silently fail if the port's still bound.** Killing
-  and restarting `app.py` via `nohup ... & disown` in the same shell
-  command sometimes races — the old process can still hold port 5000, the
-  new one dies with "Address already in use" in the background, and you
-  keep talking to stale code without realizing it. Always verify after a
-  restart: `curl -s http://127.0.0.1:5000/api/data` and check the response
-  actually reflects the change, not just that a process is running. This
-  bit us once mid-project — don't trust `ps aux` alone.
-- **`config.py`/`data.json` must never be tracked in git again — this was
-  a real bug caught by testing, not a hypothetical.** They used to be
-  committed directly, and the first draft of the auto-updater used
-  `git update-index --skip-worktree` on them plus `git reset --hard` to
-  update. That's broken: tested against a real repo, `git reset --hard`
-  doesn't silently preserve a skip-worktree'd file when the target commit
-  *also* changed that path — it aborts the whole reset with "Entry ... not
-  uptodate. Cannot merge." (fatal), so the very first upstream commit that
-  touched `data.json`/`config.py` would deadlock every deployed Pi's
-  auto-updater, permanently, with no code updates applying at all. The fix
-  landed instead: both files are gitignored and only ever created from
-  `data.default.json`/`config.py.example` if missing (see file structure
-  above) — untracked files are categorically immune to `git reset --hard`/
-  `checkout`/`pull`, no edge cases. **Do not re-track either file, and
-  don't reach for skip-worktree here again** — if you need this pattern
-  for a new local-state file, copy the gitignored-template approach.
-  `config.py.example` still ships with the placeholder password
-  (`changeme123`) — real deployments should change `ADMIN_PASSWORD` in the
-  generated `config.py`, not the template.
-- **"Untracked files are immune to reset --hard" is only true for a
-  checkout that started that way.** A second real bug, caught live on an
-  already-deployed Pi whose checkout predated the commit above: its
-  `data.json` was still tracked with real local modifications (from
-  before the gitignore change existed), so `git pull` refused outright —
-  loud but safe. Then, testing what `scripts/auto-update.sh`'s actual
-  `git reset --hard` would have done in that same situation: it succeeds
-  with no error and **silently deletes** the file, because it's tracked
-  and locally-modified in the OLD HEAD but absent from the target
-  commit's tree — confirmed with a scripted before/after test, not
-  assumed. Fixed by having `auto-update.sh`, `deploy-dashboard.sh`, and
-  `provision-pi.sh` all run
-  `git rm --cached -q data.json config.py 2>/dev/null || true`
-  immediately before their `pull`/`fetch+reset` — untracks them locally
-  first (never touches the on-disk file) so the update can't conflict
-  with or delete either one, regardless of how old the checkout is.
-  `deploy-dashboard.sh`'s clone/pull step was also switched from a plain
-  `git pull` to `fetch` + `reset --hard` (matching `auto-update.sh`) once
-  that guard made it safe to do so — `pull` still refuses outright in
-  edge cases even with the guard (tested), `fetch`+`reset --hard`
-  doesn't. If you add another local-state file (gitignored, templated),
-  give it the same `git rm --cached` guard everywhere it's needed.
-- **`HEADLESS` in `deploy-dashboard.sh` defaults to `false`.** Kiosk setup
-  always runs unless the caller explicitly passes `HEADLESS=true` — it's
-  threaded as an env var through all three provisioning stages now
-  (`provision-pi.sh` → `harden-system.sh` → `deploy-dashboard.sh`). Do
-  not reintroduce hardware-guessing logic that skips kiosk mode by
-  default — that was a bug reported and fixed once already (Pi Zero
-  auto-detection was silently skipping kiosk).
-- **`data.json` holds live admin-entered content**, often in Arabic. It's
-  gitignored now (see above), so local testing can't corrupt the repo's
-  shipped default via git — but it's still a real file on whatever machine
-  you're testing on; don't leave test values in a `data.json` someone else
-  might reuse.
-- **Currency `code` is the primary key** (not a separate id) — form field
-  names like `name_{code}`, `price_{code}` depend on codes being unique
-  and stable. `admin_add_currency` already rejects duplicates.
-- **No database, no ORM, no build step** — this stays a single Python file
-  with embedded templates by design (Pi Zero W target, fastest-path
-  philosophy from the original ask). Resist the urge to split into
-  templates/blueprints/etc. unless the user asks.
-- **`provision-pi.sh` must keep network setup as its ONLY real step** (see
-  "Provisioning architecture" above for why it's scoped down to just
-  this). apt and git both require internet, and a fresh Pi normally has
-  neither Ethernet nor Wi-Fi configured — the script checks connectivity
-  via `check_internet()` and loops on `connect_wifi()` (interactive) or
-  `connect_wifi_auto()` (`--auto_default`) until it succeeds before doing
-  anything that fetches packages (the `apt install git` right before
-  cloning, and the clone itself). Don't move bloat-removal/user/hostname/
-  hardening logic back into this script — that all lives in
-  `harden-system.sh` now, specifically so `provision-pi.sh` stays the one
-  minimal file you can copy onto a card before the repo exists there.
-- **`setup_console_x()`'s `.xinitrc` must end with `exec {{KIOSK_CMD}}` in
-  the foreground, never `{{KIOSK_CMD}} &` backgrounded — this was a real,
-  deployed bug, not a hypothetical.** (See `scripts/files/kiosk/xinitrc`.)
-  A backgrounded last command makes `xinit`/`startx` tear the whole X
-  session down the instant the script reaches EOF with nothing left to
-  wait on: on the console+X path (Pi OS Lite, no labwc/wayfire/LXDE), X
-  would start, launch Chromium, and exit again within ~3 seconds every
-  time — `Xorg.0.log` showed a clean `Server terminated successfully
-  (0)`, no crash, because the shutdown was intentional as far as xinit
-  was concerned. Confirmed live via SSH on a deployed Pi. Fixed by
-  switching the last line to `exec` (no trailing `&`), then verified by
-  restarting `getty@tty1.service` remotely and confirming Xorg + the
-  full Chromium process tree stayed up. This does **not** apply to
-  `setup_labwc()`/`setup_wayfire()`/`setup_lxde()` — those write into a
-  compositor/session-manager's own autostart mechanism, which keeps the
-  session alive independently of whether the launched command backgrounds
-  itself; only the raw `xinit`-read `.xinitrc` has this failure mode.
-- **`setup_console_x()` must install and launch `matchbox-window-manager`
-  — without a window manager, Chromium's `--kiosk` fullscreen request has
-  nobody to honor it.** Also caught live, right after the bug above:
-  Chromium started fine but its window sat at some toolkit-default size
-  (`945x1060` at `+10+10` on a 1920x1080 screen) instead of filling the
-  screen. matchbox is the standard minimal WM for exactly this bare-X
-  kiosk case; it auto-maximizes any window it manages. After the fix,
-  `xwininfo` showed Chromium at exactly `1920x1080+0+0`. This does not
-  apply to `setup_labwc()`/`setup_wayfire()`/`setup_lxde()` — those are
-  themselves compositors/session managers that already maximize single
-  kiosk windows.
-- **Boot config (HDMI-always-on, silent boot) is one managed
-  `ensure_block_in_file --sudo` call on `config.txt` (content:
-  `scripts/files/boot/config-txt-append.conf`) plus one
-  `ensure_tokens_in_cmdline --sudo` call on `cmdline.txt` (content:
-  `scripts/files/boot/cmdline-txt-tokens.txt`)** — merged from what used
-  to be two separate hand-rolled functions
-  (`configure_hdmi_always_on()`/`configure_silent_boot()`), each with its
-  own per-line grep-then-append loop. Same net effect (HDMI forced on,
-  console blanking off, boot splash/delay/log spam suppressed), same
-  backup-on-first-change behavior, now going through the shared,
-  independently-tested helpers instead of bespoke per-line logic — see
-  "Provisioning architecture" above for why that matters. Doesn't touch
-  which `console=` entries exist in `cmdline.txt` (serial debug console
-  stays available).
-- **`security_log` logs at `.error()`, not `.warning()` — this is load-
-  bearing, not a style choice.** `harden-system.sh` sets journald's
-  `MaxLevelStore=err` system-wide (see below), which means anything
-  logged below error severity is never written to the journal at all —
-  not just trimmed from long-term retention, genuinely never stored,
-  which also means fail2ban's journal-following jail would never see it.
-  Failed-login/lockout messages are logged at `.error()` specifically so
-  they keep reaching both the journal (and therefore fail2ban) and
-  `logs/app.log` under that policy. If you ever add more security-
-  relevant logging, use `.error()` for the same reason, or loosen
-  `MaxLevelStore` in lockstep — don't let the two drift apart.
-- **`harden-system.sh`'s log-limits step** (`journald.conf.d/10-currency-
-  dashboard-limits.conf`, from `scripts/files/journald/`:
-  `MaxLevelStore=err`, `MaxRetentionSec=1week`, `SystemMaxUse=200M`) and
-  **`app.py`'s own `logs/app.log`** (`TimedRotatingFileHandler`,
-  `when="midnight"`, `backupCount=7` = 1 week, level `ERROR`) are two
-  independent, deliberately redundant layers — journald's policy is
-  system-wide and would apply even if the app weren't Python/didn't have
-  its own file handler; the app's own rotating file is a guarantee that
-  doesn't depend on journald's config being correct on whatever box it's
-  running on. Keep both in sync if the retention window ever changes
-  (currently 1 week in both places). `werkzeug`'s logger is also pinned
-  to `ERROR` in `app.py` — without that it logs every single request at
-  INFO on every 3s poll, which is what was flooding `systemctl status`
-  output before this.
-- **The mouse pointer, visible on screen despite no mouse being attached,
-  is hidden via `startx -- -nocursor` (an Xorg SERVER flag), not
-  matchbox's `-use_cursor no`.** The latter only controls whether matchbox
-  itself draws/manages a cursor for windows it manages — the X server's
-  own default arrow cursor was still rendering regardless, since nothing
-  else was suppressing it. `-nocursor` tells Xorg not to draw a cursor
-  sprite at all. This line lives in `scripts/files/kiosk/
-  bash-profile.snippet`, installed via `ensure_block_in_file` (see
-  "Provisioning architecture") — that mechanism is what replaced the
-  original `sed`-based self-heal logic that once silently failed to
-  reach an already-provisioned Pi (an insert-only "does an active line
-  already exist" check doesn't ask "does it match current content," so a
-  content change to this line never landed on boards that already had an
-  older version of it). `ensure_block_in_file` fixes that by construction
-  — every run fully removes any old managed block and re-adds the current
-  one, so there's no "already configured" check to get wrong.
-- **The emergency AP's networkd drop-in MUST sort before netplan's
-  generated `10-netplan-<dev>.network`, and ufw MUST be opened for UDP/67
-  — two separate, independently-fatal bugs, both found live, both with
-  the exact same symptom: clients associate to the hotspot fine and then
-  never get an IP.** (1) systemd-networkd applies only the FIRST matching
-  `.network` file, sorted by FILENAME across `/etc`, `/run` and
-  `/usr/lib` — `/etc` beats `/run` only for an *identical* filename. The
-  drop-in was originally `90-dashboard-ap.network`, so netplan's
-  `/run/systemd/network/10-netplan-wlan0.network` won every time and
-  wlan0 silently kept `DHCP=ipv4` (client): no `192.168.50.1`, no
-  `DHCPServer=yes`. It's `05-dashboard-ap.network` now — don't renumber
-  it above 10. (2) Even with the address correct, `harden-system.sh`
-  leaves ufw at `default deny (incoming)` and only opens 22/`APP_PORT`/
-  `HTTPS_PORT`; systemd-networkd's DHCP server receives on a normal UDP
-  socket bound to port 67, so every client DISCOVER hit `INPUT DROP`
-  before reaching it. ufw's own built-in DHCP rule covers only the
-  *client* direction (sport 67 → dport 68). `ap_firewall_open()`/
-  `ap_firewall_close()` in the daemon add and remove an
-  interface-scoped `ufw allow in on <dev> to any port 67 proto udp`
-  around each AP session — interface-scoped because a DHCP DISCOVER has
-  source `0.0.0.0`, so a `from <subnet>` rule can never match it.
-  `deploy-dashboard.sh` separately opens `192.168.50.0/24` to 22/
-  `APP_PORT`/`HTTPS_PORT`, unconditionally, because a `LAN_SUBNET`-scoped
-  rule set otherwise locks out the fallback AP's own clients — the exact
-  situation the fallback exists for. `start_ap_netplan()` now verifies
-  (rather than assumes) that the address landed and that something is
-  listening on UDP/67, logging a loud ERROR for either — both of these
-  bugs were invisible for multiple debugging rounds precisely because
-  nothing checked.
-- **A blank Wi-Fi/hotspot password field means "keep the saved one", and
-  ONLY ever resolves for an SSID that is unchanged — it never means "open
-  network".** Open networks are rejected outright: `admin_wifi_save()` and
-  `admin_ap_save()` both refuse to write an entry without a password. The
-  password inputs are `type="password"` with no `value=`, deliberately never
-  echoed back into the HTML (same reasoning as `ADMIN_PASSWORD` having no
-  edit UI), so a blank submission is genuinely ambiguous between "leave it
-  alone" and "clear it" — these two routes resolve that ambiguity by looking
-  up the *old* password **keyed by SSID**, not by slot position. Keying by
-  SSID is the load-bearing part: it means editing only a network's name
-  still demands its password, so a renamed SSID can never silently inherit
-  the previous network's PSK, and reordering the three slots can never shuffle
-  passwords onto the wrong networks. `validate_wifi_password()` still returns
-  `""` for an empty field (it's a length validator, not a policy one) — the
-  "no open networks" policy lives in the two routes, so don't move an
-  emptiness check down into the validator and assume the routes are covered.
-- **`net_config.default.json` ships real Wi-Fi/hotspot passwords in a
-  repo that is PUBLIC on GitHub.** This is a deliberate, requested
-  trade-off, not an oversight: a fresh board clones this repo over the
-  network, so baking the credentials into a tracked template is the only
-  way `deploy-dashboard.sh` can hand a headless kiosk a working network
-  with zero manual steps. The cost is that anyone can read those PSKs.
-  If that stops being acceptable, the fix is NOT to blank the template
-  (that silently reverts a fresh board to unreachable) — either make the
-  repo private, or add a deploy-time lookup for the file somewhere
-  outside the checkout (the FAT `/boot` partition is writable from any
-  PC at flash time) and fall back to the tracked template only when that
-  is absent. Rotating the PSKs in the admin panel does not rewrite this
-  file — it only writes `net_config.json` — so the template keeps
-  whatever was committed until someone updates it by hand.
-- **Wi-Fi scanning can silently return nothing on a truly fresh SD
-  card** — the radio can be rfkill-soft-blocked or NetworkManager's own
-  Wi-Fi radio toggle can be off, and a scan in either state just comes
-  back empty with no error, indistinguishable from "no networks nearby."
-  Reported live: a first run's scan found nothing, and running
-  `raspi-config`'s own Wi-Fi setup (which unblocks/enables the radio as a
-  side effect) fixed it for a later run of this script. `connect_wifi()`
-  (interactive) and `connect_wifi_auto()` (`--auto_default`) both run
-  `sudo rfkill unblock wifi` and `sudo nmcli radio wifi on`
-  unconditionally before touching the radio (harmless no-ops if already
-  fine), and the interactive path's "no networks found" warning suggests
-  the WLAN Country fix (`raspi-config` → Localisation Options → WLAN
-  Country) as a fallback.
-- **`--auto_default`'s Wi-Fi setup creates a saved `nmcli` profile for
-  SSID "dashboard" even if that network isn't in range yet, rather than
-  scanning for it live.** This is intentional: `nmcli connection add
-  ... ssid dashboard autoconnect yes` always succeeds regardless of
-  whether the SSID is currently visible, and NetworkManager will connect
-  to it automatically the moment it is — e.g. you set up a phone/router
-  hotspot named "dashboard" near the Pi sometime after provisioning. The
-  script only best-effort tries `nmcli connection up dashboard`
-  immediately after; a failure there is not fatal; and `harden-system.sh`'s
-  auto-installed AP fallback builds on this same saved profile as its
-  primary connection regardless of whether it's reachable at provisioning
-  time.
-- **`wifi-ap-fallback.sh` never asks for the primary Wi-Fi's SSID or
-  password — this is intentional, not a missing feature.** It only
-  builds on a Wi-Fi connection that already exists in NetworkManager
-  (freshly created by `provision-pi.sh`'s `connect_wifi()`/
-  `connect_wifi_auto()`, or a pre-existing one from
-  `raspi-config`/manual `nmcli`), reusing whatever is already saved there
-  — same reason `harden-system.sh` passes `WIFI_CONNECTION="$WIFI_SSID"`
-  (or the fixed `dashboard` in auto mode) into it rather than
-  re-prompting. If none exists, it fails fast with a message telling you
-  to set up normal Wi-Fi first, rather than trying to become a second
-  Wi-Fi-setup flow.
-- **The watchdog script it installs is intentionally NOT `set -e`** (only
-  `set -u`) — it runs forever in a `while true` polling loop, and a
-  single transient `nmcli`/DBus failure must be logged and retried on the
-  next 15s tick, not kill the whole daemon. Keep that if you touch
-  `scripts/files/network/wifi-ap-fallback-watchdog.sh`; this mirrors why
-  `disable-kiosk.sh` (a different, one-shot script) also avoids `set -e`
-  for a different reason — see that script's own comment.
-- **The emergency AP profile (`Emergency-AP`) is always deleted and
-  recreated from scratch, never modified in place**, so re-running
-  `wifi-ap-fallback.sh` with a different SSID/password can't leave stale
-  `wifi-sec.*` settings behind from a previous run. The watchdog config
-  file (`/etc/wifi-ap-fallback/config`, root-only, mode 600) stores the
-  device/connection names and timing only — the AP password itself lives
-  solely in NetworkManager's own connection profile
-  (`/etc/NetworkManager/system-connections/`), never duplicated anywhere
-  else on disk. This file (and `generate-cert.sh`'s `cert.meta`) are the
-  two deliberate exceptions to "everything goes through
-  render_template" — both are genuinely install-time-computed data, not
-  static template content.
+**Dashboard JS.** Cards are built with `innerHTML`, so everything interpolated
+goes through `esc()`, and flag `src=` additionally through `safeFlagSrc()`.
+
+**Kiosk.** `.xinitrc` must *end* with `exec {{KIOSK_CMD}}` — no trailing `&`, or
+X tears down instantly. The console+X path needs `matchbox-window-manager` for
+`--kiosk` to fill the screen, and `startx -- -nocursor` to hide the pointer
+(NOTES). `HEADLESS` defaults to `false`; never reintroduce hardware-guessing.
+
+**systemd.** `systemctl enable --now` does *not* restart an already-running
+unit — redeploys must `restart` explicitly.
+
+**i18n.** `TRANSLATIONS` (`en`/`ar`) covers admin UI chrome only; keep both
+languages at key parity. Currency names and the dashboard title/subtitle are
+admin-typed free text and are never auto-translated.
+
+**Scope.** One Python file with embedded templates, targeting a Pi Zero W. No
+database, no ORM, no blueprints, no build step — don't split it up unless asked.

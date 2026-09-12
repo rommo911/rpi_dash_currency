@@ -75,7 +75,7 @@ fi
 
 log "1/13 Installing system dependencies"
 sudo apt update
-sudo apt install -y git python3-venv python3-pip curl openssl
+sudo apt install -y git python3-venv python3-pip curl openssl avahi-daemon
 
 CHROMIUM_BIN=""
 if is_headless; then
@@ -603,7 +603,7 @@ setup_console_x() {
   # ensure_block_in_file (see scripts/lib.sh) always converges .bash_profile
   # on exactly the current scripts/files/kiosk/bash-profile.snippet content,
   # whatever was there on a previous run — this replaces the old bespoke
-  # sed self-heal logic (see CLAUDE.md for the bug that caused) with the
+  # sed self-heal logic 
   # same shared, independently-tested mechanism disable-kiosk.sh's
   # --remove counterpart uses.
   ensure_block_in_file "$HOME/.bash_profile" "currency-dashboard-kiosk" "$FILES_DIR/kiosk/bash-profile.snippet"

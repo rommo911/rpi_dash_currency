@@ -23,7 +23,7 @@
 # guard for any checkout old enough to predate that change — a plain
 # reset --hard silently DELETES a file that's tracked+locally-modified in
 # HEAD but absent from the target commit, confirmed by testing. Don't
-# track either file directly again; see CLAUDE.md.
+# track either file directly again
 #
 # Usage:
 #   INSTALL_DIR=/path/to/repo ./auto-update.sh
