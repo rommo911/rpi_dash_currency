@@ -716,7 +716,7 @@ DASHBOARD_HTML = """
     --text-main: #f8fafc;
     --text-dim: #94a3b8;
     --accent: #22d3ee;
-    --dashboard-font: "Tahoma", sans-serif;
+    --dashboard-font: "Noto Sans Arabic";
   }
   * { box-sizing: border-box; }
   html, body { height: 100%; }

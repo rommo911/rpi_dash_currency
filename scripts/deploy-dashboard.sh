@@ -75,7 +75,7 @@ fi
 
 log "1/13 Installing system dependencies"
 sudo apt update
-sudo apt install -y git python3-venv python3-pip curl openssl avahi-daemon
+sudo apt install -y git python3-venv python3-pip curl openssl avahi-daemon fonts-noto-core
 
 CHROMIUM_BIN=""
 if is_headless; then
