@@ -716,12 +716,13 @@ DASHBOARD_HTML = """
     --text-main: #f8fafc;
     --text-dim: #94a3b8;
     --accent: #22d3ee;
+    --dashboard-font: "Tahoma", sans-serif;
   }
   * { box-sizing: border-box; }
   html, body { height: 100%; }
   body {
     margin: 0;
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    font-family: var(--dashboard-font);
     background: radial-gradient(circle at 20% 20%, var(--bg-2), var(--bg-1) 60%);
     color: var(--text-main);
     overflow: hidden;
@@ -1113,7 +1114,7 @@ ADMIN_STYLE = """
   body {
     margin: 0;
     min-height: 100vh;
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    font-family: var(--dashboard-font);
     background: radial-gradient(circle at 20% 20%, var(--bg-2), var(--bg-1) 60%);
     color: var(--text-main);
     padding: 32px 24px 80px;
