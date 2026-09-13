@@ -63,11 +63,11 @@ else
 fi
 
 if [[ "$needs_generate" != true ]]; then
-  log "Certificate for $CURRENT_HOSTNAME ($CURRENT_IP) is still valid — nothing to do."
+  log_info "Certificate for $CURRENT_HOSTNAME ($CURRENT_IP) is still valid — nothing to do."
   exit 0
 fi
 
-log "Generating certificate for $CURRENT_HOSTNAME ($CURRENT_IP) — $reason"
+log_info "Generating certificate for $CURRENT_HOSTNAME ($CURRENT_IP) — $reason"
 
 SAN="DNS:${CURRENT_HOSTNAME},DNS:${CURRENT_HOSTNAME}.local,DNS:localhost,IP:${CURRENT_IP},IP:127.0.0.1"
 
@@ -90,4 +90,4 @@ CERT_IP="$CURRENT_IP"
 CERT_GENERATED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 EOF
 
-log "Regenerated certificate for $CURRENT_HOSTNAME ($CURRENT_IP), valid $VALIDITY_DAYS days (SAN: $SAN)"
+log_info "Regenerated certificate for $CURRENT_HOSTNAME ($CURRENT_IP), valid $VALIDITY_DAYS days (SAN: $SAN)"

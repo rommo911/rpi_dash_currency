@@ -30,21 +30,21 @@ if [[ $EUID -eq 0 ]]; then
   exit 1
 fi
 
-log "Stopping and disabling the ${SERVICE_NAME} service"
+log_info "Stopping and disabling the ${SERVICE_NAME} service"
 if systemctl list-unit-files "${SERVICE_NAME}.service" >/dev/null 2>&1; then
   sudo systemctl disable --now "${SERVICE_NAME}" 2>&1
 else
   echo "${SERVICE_NAME}.service not found — nothing to stop."
 fi
 
-log "Pausing the auto-updater timer"
+log_info "Pausing the auto-updater timer"
 if systemctl list-unit-files "${SERVICE_NAME}-updater.timer" >/dev/null 2>&1; then
   sudo systemctl disable --now "${SERVICE_NAME}-updater.timer" 2>&1
 else
   echo "${SERVICE_NAME}-updater.timer not found — nothing to pause."
 fi
 
-log "Disabling kiosk auto-boot"
+log_info "Disabling kiosk auto-boot"
 # The kiosk block in .bash_profile is managed by ensure_block_in_file (see
 # scripts/lib.sh) under the same 'currency-dashboard-kiosk' marker that
 # deploy-dashboard.sh's setup_console_x() writes — --remove-- rebuilds the
@@ -61,7 +61,7 @@ else
   echo "No kiosk autostart block found in ~/.bash_profile — already disabled, or console+X kiosk was never configured on this board."
 fi
 
-log "Stopping any kiosk session currently running"
+log_info "Stopping any kiosk session currently running"
 pkill -f 'chromium.*--kiosk' 2>/dev/null && echo "Stopped chromium." || echo "No kiosk chromium process was running."
 pkill -x matchbox-window-manager 2>/dev/null && echo "Stopped matchbox-window-manager." || echo "matchbox-window-manager was not running."
 sudo pkill -x Xorg 2>/dev/null && echo "Stopped Xorg." || echo "Xorg was not running."

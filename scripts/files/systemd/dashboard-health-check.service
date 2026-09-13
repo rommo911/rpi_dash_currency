@@ -1,8 +1,10 @@
 [Unit]
 Description=Currency Dashboard Post-Boot Health Check
-After=network-online.target {{SERVICE_NAME}}.service
+After=network-online.target currency-dashboard.service
 Wants=network-online.target
 
 [Service]
 Type=oneshot
-ExecStart={{SCRIPT_PATH}}
+ExecStart=/usr/local/sbin/dashboard-health-check
+StandardOutput=journal
+StandardError=journal

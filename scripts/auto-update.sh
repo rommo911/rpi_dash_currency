@@ -62,13 +62,13 @@ if [[ -f "$CHECK_NOW_FLAG" ]]; then
 fi
 
 if [[ "$FORCE_RUN" != true && ! -f "$ENABLED_FLAG" ]]; then
-  log "Automatic updates are disabled in the admin panel — skipping (not a manual check-now)."
+  log_info "Automatic updates are disabled in the admin panel — skipping (not a manual check-now)."
   exit 0
 fi
 
 needs_restart=false
 
-log "Checking for updates on branch '$BRANCH'"
+log_info "Checking for updates on branch '$BRANCH'"
 git fetch origin "$BRANCH" --quiet
 
 if ! git show-ref --verify --quiet "refs/heads/$BRANCH"; then
@@ -81,7 +81,7 @@ LOCAL="$(git rev-parse HEAD)"
 REMOTE="$(git rev-parse "origin/$BRANCH")"
 
 if [[ "$LOCAL" != "$REMOTE" ]]; then
-  log "Update available on $BRANCH: ${LOCAL:0:9} -> ${REMOTE:0:9}"
+  log_info "Update available on $BRANCH: ${LOCAL:0:9} -> ${REMOTE:0:9}"
   REQS_BEFORE="$(git show HEAD:requirements.txt 2>/dev/null || true)"
   # A checkout from before data.json/config.py were gitignored may still
   # have them TRACKED with local (real, live) modifications — untrack
@@ -93,18 +93,17 @@ if [[ "$LOCAL" != "$REMOTE" ]]; then
   git reset --hard "origin/$BRANCH" --quiet
   REQS_AFTER="$(cat requirements.txt 2>/dev/null || true)"
   if [[ "$REQS_BEFORE" != "$REQS_AFTER" && -x "$INSTALL_DIR/.venv/bin/pip" ]]; then
-    log "requirements.txt changed — reinstalling dependencies"
+    log_info "requirements.txt changed — reinstalling dependencies"
     "$INSTALL_DIR/.venv/bin/pip" install -q -r "$INSTALL_DIR/requirements.txt"
   fi
   needs_restart=true
 else
-  log "Already up to date ($BRANCH @ ${LOCAL:0:9})"
+  log_info "Already up to date ($BRANCH @ ${LOCAL:0:9})"
 fi
 
 if [[ -x "$INSTALL_DIR/scripts/generate-cert.sh" ]]; then
   CERT_OUTPUT="$(INSTALL_DIR="$INSTALL_DIR" "$INSTALL_DIR/scripts/generate-cert.sh" 2>&1)" || {
-    warn "Certificate check/renewal failed:"
-    warn "$CERT_OUTPUT"
+    log_warn "Certificate check/renewal failed: $CERT_OUTPUT"
   }
   echo "$CERT_OUTPUT"
   if grep -q "^==> Regenerated certificate" <<<"$CERT_OUTPUT"; then
@@ -113,11 +112,11 @@ if [[ -x "$INSTALL_DIR/scripts/generate-cert.sh" ]]; then
 fi
 
 if [[ "$needs_restart" == true ]]; then
-  log "Restarting $SERVICE_NAME"
-  if sudo -n systemctl restart "$SERVICE_NAME" 2>/dev/null; then
-    log "Restarted $SERVICE_NAME"
-  else
-    warn "Could not restart $SERVICE_NAME automatically (sudoers rule missing or not passwordless)."
-    warn "Restart it by hand: sudo systemctl restart $SERVICE_NAME"
-  fi
+  log_info "Restarting $SERVICE_NAME"
+    if sudo -n systemctl restart "$SERVICE_NAME" 2>/dev/null; then
+      log_info "Restarted $SERVICE_NAME"
+    else
+      log_warn "Could not restart $SERVICE_NAME automatically (sudoers rule missing or not passwordless)."
+      log_warn "Restart it by hand: sudo systemctl restart $SERVICE_NAME"
+    fi
 fi

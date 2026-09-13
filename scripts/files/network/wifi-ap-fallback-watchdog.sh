@@ -10,10 +10,14 @@ if [[ ! -f "$CONFIG" ]]; then
   echo "Missing $CONFIG"
   exit 1
 fi
-# shellcheck disable=SC1090
 source "$CONFIG"
 
-log() { logger -t wifi-ap-fallback "$1"; echo "$1"; }
+# Prefer the central logging helpers from the install when available so
+# admin-controlled `LOG_LEVEL` and consistent journald tagging are used.
+INSTALL_DIR="${INSTALL_DIR:-/home/kiosk/currency-dashboard}"
+if [[ -f "$INSTALL_DIR/scripts/lib.sh" ]]; then
+  source "$INSTALL_DIR/scripts/lib.sh"
+fi
 
 wifi_connected() {
   local state
@@ -27,7 +31,7 @@ ap_active() {
 
 stop_ap() {
   if ap_active; then
-    log "Normal Wi-Fi is up — stopping emergency AP."
+    log_info "Normal Wi-Fi is up — stopping emergency AP."
     nmcli connection down "$AP_CONN_NAME" >/dev/null 2>&1 || true
   fi
 }
@@ -36,30 +40,30 @@ start_ap() {
   if ap_active; then
     return
   fi
-  log "Wi-Fi unavailable — starting emergency AP ($AP_CONN_NAME)."
+  log_warn "Wi-Fi unavailable — starting emergency AP ($AP_CONN_NAME)."
   nmcli device disconnect "$WIFI_DEV" >/dev/null 2>&1 || true
   sleep 2
-  nmcli connection up "$AP_CONN_NAME" >/dev/null 2>&1 || log "ERROR: failed to start $AP_CONN_NAME"
+  nmcli connection up "$AP_CONN_NAME" >/dev/null 2>&1 || log_error "Failed to start $AP_CONN_NAME"
 }
 
 try_reconnect() {
-  log "Trying primary Wi-Fi: $PRIMARY_CONN"
+  log_info "Trying primary Wi-Fi: $PRIMARY_CONN"
   stop_ap
   sleep 2
   nmcli radio wifi on >/dev/null 2>&1 || true
   nmcli connection up "$PRIMARY_CONN" >/dev/null 2>&1 || true
   for ((i = 0; i < WIFI_TIMEOUT; i++)); do
     if wifi_connected; then
-      log "Wi-Fi connected: $PRIMARY_CONN"
+      log_info "Wi-Fi connected: $PRIMARY_CONN"
       return 0
     fi
     sleep 1
   done
-  log "Wi-Fi connection attempt failed."
+  log_warn "Wi-Fi connection attempt failed."
   return 1
 }
 
-log "wifi-ap-fallback watchdog started (primary=$PRIMARY_CONN ap=$AP_CONN_NAME)"
+log_info "wifi-ap-fallback watchdog started (primary=$PRIMARY_CONN ap=$AP_CONN_NAME)"
 nmcli radio wifi on >/dev/null 2>&1 || true
 
 while true; do

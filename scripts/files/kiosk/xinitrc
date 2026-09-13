@@ -12,9 +12,9 @@ xset s off
 xset s noblank
 matchbox-window-manager -use_cursor no -use_titlebar no &
 sleep 1
-until curl -s http://localhost:{{APP_PORT}} >/dev/null; do sleep 1; done
+until curl -s http://localhost:80 >/dev/null; do sleep 1; done
 # X11 kiosk startup is intentionally kept in the foreground with exec.
 # This is compatible with both Raspberry Pi OS and Armbian/Orange Pi when
 # startx is launched from tty1, but Armbian images may require a distro-native
 # autologin method to reach this path automatically.
-exec {{KIOSK_CMD}}
+exec sh -c 'rm -f "/home/kiosk/.config/chromium/SingletonLock" "/home/kiosk/.config/chromium/SingletonSocket" "/home/kiosk/.config/chromium/SingletonCookie" 2>/dev/null; exec chromium-browser --kiosk --incognito --noerrant --disable-infobars --disable-session-crashed-bubble --check-for-update-interval=31536000 http://localhost:80'

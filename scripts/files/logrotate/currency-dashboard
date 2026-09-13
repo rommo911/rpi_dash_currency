@@ -1,0 +1,12 @@
+/home/kiosk/currency-dashboard/logs/*.log {
+    missingok
+    notifempty
+    copytruncate
+    rotate 3
+    daily
+    dateext
+    compress
+    delaycompress
+    create 0640 kiosk kiosk
+    sharedscripts
+}

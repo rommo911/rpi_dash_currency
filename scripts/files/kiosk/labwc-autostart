@@ -1,1 +1,1 @@
-{{KIOSK_CMD}} &
+sh -c 'rm -f "/home/kiosk/.config/chromium/SingletonLock" "/home/kiosk/.config/chromium/SingletonSocket" "/home/kiosk/.config/chromium/SingletonCookie" 2>/dev/null; exec chromium-browser --kiosk --incognito --noerrant --disable-infobars --disable-session-crashed-bubble --check-for-update-interval=31536000 http://localhost:80' &

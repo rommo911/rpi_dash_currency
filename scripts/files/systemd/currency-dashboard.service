@@ -5,15 +5,18 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-ExecStart={{INSTALL_DIR}}/.venv/bin/python {{INSTALL_DIR}}/app.py
-WorkingDirectory={{INSTALL_DIR}}
-Environment=APP_PORT={{APP_PORT}}
-Environment=HTTPS_PORT={{HTTPS_PORT}}
-EnvironmentFile=-{{INSTALL_DIR}}/.env
+
+ExecStart=/home/kiosk/currency-dashboard/.venv/bin/python /home/kiosk/currency-dashboard/app.py
+WorkingDirectory=/home/kiosk/currency-dashboard
+Environment=APP_PORT=80
+Environment=HTTPS_PORT=443
+EnvironmentFile=-/home/kiosk/currency-dashboard/.env
 Environment=PYTHONUNBUFFERED=1
 Restart=always
 RestartSec=5
-User={{RUN_USER}}
+User=kiosk
+StandardOutput=journal
+StandardError=journal
 AmbientCapabilities=CAP_NET_BIND_SERVICE
 
 [Install]

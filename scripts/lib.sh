@@ -7,19 +7,74 @@
 # The point of this file: every installed config file (systemd units,
 # fail2ban jails, sudoers rules, kiosk autostart, boot config, ...) lives
 # as a real file under scripts/files/, not as heredoc text buried inside a
-# script. render_template(_user)/ensure_block_in_file/ensure_tokens_in_cmdline
-# are the ONLY mechanisms any script uses to get that content onto disk —
-# render_template(_user) for files we fully own (just render and
-# overwrite), the other two for files we only add a managed section/token
-# set to (OS/user files that also hold unrelated content we must not
-# touch). None of them use sed: everything here is plain bash string
-# substitution and line-array rebuilding. If you need a new installed
-# file, add it under scripts/files/ and call one of these — don't reach
-# for `sudo tee ... <<EOF` or `sed -i` on an installed file anywhere else
-# in this repo.
+# script. `install_file`/`install_user_file`/`ensure_block_in_file`/`ensure_tokens_in_cmdline`
+# are the ONLY mechanisms any script uses to get that content onto disk.
+# `install_file` copies a repo file verbatim to the target path; the
+# other functions manage partial inserts into OS files. If you need a
+# new installed file, add it under `scripts/files/` and call one of these.
 
-log()  { echo -e "\n\033[1;36m==> $*\033[0m"; }
-warn() { echo -e "\033[1;33m$*\033[0m"; }
+# Basic console helpers retained for interactive runs; below we wire them
+# into the system-level logging helpers that also emit to journald via
+# `logger` and respect the configured LOG_LEVEL.
+log()  { log_info "$*"; }
+warn() { log_warn "$*"; }
+
+# Load LOG_LEVEL from the install .env if present, default to WARN.
+_load_log_level() {
+  local lvl="${LOG_LEVEL:-}"
+  if [[ -z "$lvl" && -n "${INSTALL_DIR:-}" && -f "${INSTALL_DIR}/.env" ]]; then
+    lvl=$(grep -E '^LOG_LEVEL=' "${INSTALL_DIR}/.env" | tail -n1 | cut -d= -f2- || true)
+  fi
+  if [[ -z "$lvl" ]]; then lvl="WARN"; fi
+  LOG_LEVEL="${lvl^^}"
+}
+
+level_to_num() {
+  case "${1,,}" in
+    debug) echo 0 ;;
+    info)  echo 1 ;;
+    warn|warning) echo 2 ;;
+    error|err) echo 3 ;;
+    *) echo 2 ;;
+  esac
+}
+
+_load_log_level
+
+# Emit a message at a given level both to stdout (colored) and to syslog
+# (so journald receives it). Respects LOG_LEVEL (re-loaded each call so
+# later changes to $INSTALL_DIR/.env take effect immediately).
+_log_emit() {
+  local lvl="$1" shiftmsg
+  shift
+  shiftmsg="$*"
+  # Refresh LOG_LEVEL from disk each invocation in case it changed.
+  _load_log_level
+  local LOG_LEVEL_NUM
+  LOG_LEVEL_NUM=$(level_to_num "$LOG_LEVEL")
+  local num
+  num=$(level_to_num "$lvl")
+  if (( num < LOG_LEVEL_NUM )); then
+    return 0
+  fi
+  local tag="currency-dashboard"
+  local colors=("\033[1;34m" "\033[1;36m" "\033[1;33m" "\033[1;31m")
+  local idx=$num
+  [[ $idx -gt 3 ]] && idx=3
+  echo -e "\n${colors[$idx]}==> [$lvl] $shiftmsg\033[0m"
+  case "${lvl,,}" in
+    debug) logger -t "$tag" -p user.debug "$shiftmsg" ;;
+    info)  logger -t "$tag" -p user.info "$shiftmsg" ;;
+    warn|warning) logger -t "$tag" -p user.warning "$shiftmsg" ;;
+    error|err) logger -t "$tag" -p user.err "$shiftmsg" ;;
+    *) logger -t "$tag" -p user.notice "$shiftmsg" ;;
+  esac
+}
+
+log_debug() { _log_emit debug "$@"; }
+log_info()  { _log_emit info "$@"; }
+log_warn()  { _log_emit warn "$@"; }
+log_error() { _log_emit error "$@"; }
 
 # is_auto — true when the whole provisioning chain should run
 # non-interactively with defaults (set by provision-pi.sh --auto_default
@@ -77,55 +132,36 @@ detect_boot_dir() {
   fi
 }
 
-# render_template <template-file> <dest-path> [KEY=VALUE ...]
-# Replaces every {{KEY}} token in the template with its VALUE (plain bash
-# substring replacement — no sed, no external tools) and installs the
-# result at dest-path via sudo. A template with no KEY=VALUE args is
-# installed byte-for-byte (still goes through the same function, so there
-# is exactly one code path for "put this repo file onto the system").
-# Always overwrites: identical input always produces identical output, so
-# there's nothing to check-before-writing.
-render_template() {
+# install_file <source> <dest>
+# Copy a repo file verbatim to the destination as root.
+install_file() {
   local template="$1" dest="$2"
-  shift 2
   if [[ ! -f "$template" ]]; then
-    warn "Template not found: $template — skipping $dest"
+    warn "Source file not found: $template — skipping $dest"
     return 1
   fi
-  local content
-  content="$(cat "$template")"
-  local kv key val
-  for kv in "$@"; do
-    key="${kv%%=*}"
-    val="${kv#*=}"
-    content="${content//\{\{$key\}\}/$val}"
-  done
   local dest_dir
   dest_dir="$(dirname "$dest")"
   sudo mkdir -p "$dest_dir"
-  printf '%s\n' "$content" | sudo tee "$dest" >/dev/null
+  sudo install -m 644 "$template" "$dest"
 }
 
-# render_template_user — same as render_template but for a file owned by
-# the invoking (non-root) user, e.g. ~/.xinitrc — no sudo needed/wanted.
-render_template_user() {
+## install_user_file <source> <dest>
+## Install a file into a user's home, ensuring ownership is kiosk:kiosk.
+install_user_file() {
   local template="$1" dest="$2"
-  shift 2
   if [[ ! -f "$template" ]]; then
-    warn "Template not found: $template — skipping $dest"
+    warn "Source file not found: $template — skipping $dest"
     return 1
   fi
-  local content
-  content="$(cat "$template")"
-  local kv key val
-  for kv in "$@"; do
-    key="${kv%%=*}"
-    val="${kv#*=}"
-    content="${content//\{\{$key\}\}/$val}"
-  done
   mkdir -p "$(dirname "$dest")"
-  printf '%s\n' "$content" > "$dest"
+  sudo install -o kiosk -g kiosk -m 644 "$template" "$dest"
 }
+
+# Backwards-compatibility shims for older scripts that still call the
+# old function names. New code should call `install_file`/`install_user_file`.
+render_template() { install_file "$@"; }
+render_template_user() { install_user_file "$@"; }
 
 # ensure_block_in_file [--sudo] <file> <marker> <template> [KEY=VALUE ...]
 # Manages a single delimited region inside a file we don't fully own:

@@ -94,18 +94,32 @@ DEBUG_LOG_FLAG="/etc/dashboard-net-apply-debug"
 DEBUG_LOG_FILE="/var/log/dashboard-net-apply-debug.log"
 DEBUG_LOG_MAX_BYTES=5242880
 
-log() {
-  logger -t dashboard-net-apply "$1"
-  echo "$1"
-  if [[ -f "$DEBUG_LOG_FLAG" ]]; then
-    if [[ -f "$DEBUG_LOG_FILE" ]]; then
-      local sz
-      sz="$(stat -c%s "$DEBUG_LOG_FILE" 2>/dev/null || echo 0)"
-      (( sz > DEBUG_LOG_MAX_BYTES )) && : > "$DEBUG_LOG_FILE"
+if [[ -f "${INSTALL_DIR:-/home/kiosk/currency-dashboard}/scripts/lib.sh" ]]; then
+  # shellcheck disable=SC1090
+  source "${INSTALL_DIR:-/home/kiosk/currency-dashboard}/scripts/lib.sh"
+  log() {
+    local msg="$*"
+    case "$msg" in
+      ERROR:*) log_error "${msg#ERROR: }" ;;
+      WARN:*|WARNING:*) log_warn "${msg#*:* }" ;;
+      DEBUG:*) log_debug "${msg#DEBUG: }" ;;
+      *) log_info "$msg" ;;
+    esac
+  }
+else
+  log() {
+    logger -t dashboard-net-apply "$1"
+    echo "$1"
+    if [[ -f "$DEBUG_LOG_FLAG" ]]; then
+      if [[ -f "$DEBUG_LOG_FILE" ]]; then
+        local sz
+        sz="$(stat -c%s "$DEBUG_LOG_FILE" 2>/dev/null || echo 0)"
+        (( sz > DEBUG_LOG_MAX_BYTES )) && : > "$DEBUG_LOG_FILE"
+      fi
+      printf '%s %s\n' "$(date '+%F %T')" "$1" >> "$DEBUG_LOG_FILE" 2>/dev/null
     fi
-    printf '%s %s\n' "$(date '+%F %T')" "$1" >> "$DEBUG_LOG_FILE" 2>/dev/null
-  fi
-}
+  }
+fi
 
 # detect_backend — nmcli preferred whenever present (matches every
 # existing script in this repo, which all assume NetworkManager on
@@ -144,7 +158,7 @@ detect_wifi_dev() {
 reconcile_reboot() {
   if [[ -f "$REBOOT_FLAG" ]]; then
     rm -f "$REBOOT_FLAG"
-    log "Reboot requested via admin panel — rebooting now."
+    log_info "Reboot requested via admin panel — rebooting now."
     systemctl reboot
   fi
 }
@@ -233,16 +247,16 @@ reconcile_wifi_nmcli() {
       if nmcli connection add type wifi ifname "$wifi_dev" con-name "$ssid" ssid "$ssid" \
           wifi-sec.key-mgmt wpa-psk wifi-sec.psk "$password" \
           connection.autoconnect yes connection.autoconnect-priority "$priority" >/dev/null 2>&1; then
-        log "Configured Wi-Fi profile: $ssid (priority $priority)"
+        log_info "Configured Wi-Fi profile: $ssid (priority $priority)"
       else
-        log "ERROR: failed to configure Wi-Fi profile $ssid"
+        log_error "Failed to configure Wi-Fi profile $ssid"
       fi
     else
       if nmcli connection add type wifi ifname "$wifi_dev" con-name "$ssid" ssid "$ssid" \
           connection.autoconnect yes connection.autoconnect-priority "$priority" >/dev/null 2>&1; then
-        log "Configured open Wi-Fi profile: $ssid (priority $priority)"
+        log_info "Configured open Wi-Fi profile: $ssid (priority $priority)"
       else
-        log "ERROR: failed to configure Wi-Fi profile $ssid"
+        log_error "Failed to configure Wi-Fi profile $ssid"
       fi
     fi
     idx=$((idx + 1))
@@ -259,7 +273,7 @@ reconcile_wifi_nmcli() {
     done
     if ! "$keep"; then
       nmcli connection delete "$old" >/dev/null 2>&1 || true
-      log "Removed stale Wi-Fi profile: $old"
+      log_info "Removed stale Wi-Fi profile: $old"
     fi
   done
 
@@ -369,9 +383,9 @@ PYEOF
   chmod 600 "$NETPLAN_FILE" 2>/dev/null || true
 
   if netplan apply >/dev/null 2>&1; then
-    log "Applied netplan Wi-Fi config (${#new_ssids[@]} network(s))"
+    log_info "Applied netplan Wi-Fi config (${#new_ssids[@]} network(s))"
   else
-    log "ERROR: netplan apply failed"
+    log_error "netplan apply failed"
   fi
   printf '%s\n' "${new_ssids[@]}" > "$APPLIED_SSIDS_FILE"
 }
@@ -394,11 +408,11 @@ reconcile_ap_fallback_nmcli() {
 
   if [[ "$enabled" == "1" ]]; then
     if [[ -z "$ssid" || -z "$password" ]]; then
-      log "AP fallback enabled but SSID/password missing in net_config.json — skipping"
+      log_warn "AP fallback enabled but SSID/password missing in net_config.json — skipping"
       return
     fi
     if [[ ! -x "$AP_FALLBACK_SCRIPT" && ! -f "$AP_FALLBACK_SCRIPT" ]]; then
-      log "ERROR: $AP_FALLBACK_SCRIPT not found — can't configure AP fallback"
+      log_error "$AP_FALLBACK_SCRIPT not found — can't configure AP fallback"
       return
     fi
     local primary_conn
@@ -409,20 +423,20 @@ reconcile_ap_fallback_nmcli() {
       primary_conn="$(nmcli -t -f GENERAL.CONNECTION device show "$wifi_dev" 2>/dev/null | cut -d: -f2)"
     fi
     if [[ -z "${primary_conn:-}" || "$primary_conn" == "--" ]]; then
-      log "AP fallback enabled but no primary Wi-Fi connection is known yet — skipping until a Wi-Fi profile is configured/connected"
+      log_warn "AP fallback enabled but no primary Wi-Fi connection is known yet — skipping until a Wi-Fi profile is configured/connected"
       return
     fi
-    log "Configuring/updating emergency AP fallback (primary=$primary_conn)"
+    log_info "Configuring/updating emergency AP fallback (primary=$primary_conn)"
     if sudo -u "$RUN_USER" env WIFI_CONNECTION="$primary_conn" AP_SSID="$ssid" AP_PASSWORD="$password" \
         bash "$AP_FALLBACK_SCRIPT" >/dev/null 2>&1; then
-      log "AP fallback configured"
+      log_info "AP fallback configured"
     else
-      log "ERROR: wifi-ap-fallback.sh failed"
+      log_error "wifi-ap-fallback.sh failed"
     fi
   else
     if systemctl is-enabled wifi-ap-fallback.service >/dev/null 2>&1 || \
        systemctl is-active wifi-ap-fallback.service >/dev/null 2>&1; then
-      log "Disabling emergency AP fallback"
+      log_info "Disabling emergency AP fallback"
       systemctl disable --now wifi-ap-fallback.service >/dev/null 2>&1 || true
       nmcli connection down Emergency-AP >/dev/null 2>&1 || true
     fi
@@ -471,17 +485,17 @@ ap_firewall_open() {
   local dev="$1"
   if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q "^Status: active"; then
     if ufw allow in on "$dev" to any port 67 proto udp >/dev/null 2>&1; then
-      log "Firewall: opened UDP/67 (DHCP) on $dev via ufw"
+      log_info "Firewall: opened UDP/67 (DHCP) on $dev via ufw"
       return 0
     fi
-    log "WARNING: ufw is active but refused the DHCP rule — falling back to iptables"
+    log_warn "ufw refused the DHCP rule — falling back to iptables"
   fi
   if command -v iptables >/dev/null 2>&1; then
     iptables -C INPUT -i "$dev" -p udp --dport 67 -j ACCEPT >/dev/null 2>&1 \
       || iptables -I INPUT 1 -i "$dev" -p udp --dport 67 -j ACCEPT >/dev/null 2>&1
-    log "Firewall: opened UDP/67 (DHCP) on $dev via iptables"
+    log_info "Firewall: opened UDP/67 (DHCP) on $dev via iptables"
   else
-    log "WARNING: neither ufw nor iptables available — cannot open UDP/67; DHCP may be blocked"
+    log_warn "Neither ufw nor iptables available — cannot open UDP/67; DHCP may be blocked"
   fi
 }
 
@@ -500,7 +514,7 @@ ap_firewall_close() {
 start_ap_netplan() {
   local wifi_dev="$1" ssid="$2" password="$3"
   ap_hostapd_active && return 0
-  log "Wi-Fi unavailable after retrying — starting emergency AP ($ssid) on $wifi_dev (staying up at least ${AP_MIN_DWELL_SECONDS}s)"
+  log_warn "Wi-Fi unavailable after retrying — starting emergency AP ($ssid) on $wifi_dev (staying up at least ${AP_MIN_DWELL_SECONDS}s)"
   date +%s > "$AP_STARTED_FILE" 2>/dev/null || true
 
   systemctl stop "netplan-wpa-${wifi_dev}.service" >/dev/null 2>&1 || true
@@ -551,7 +565,7 @@ EOF
 
   if ! systemd-run --unit="$AP_HOSTAPD_UNIT" --collect \
       -- /usr/sbin/hostapd "$AP_HOSTAPD_CONF" >/dev/null 2>&1; then
-    log "ERROR: failed to start hostapd for emergency AP — is 'hostapd' installed?"
+    log_error "Failed to start hostapd for emergency AP — is 'hostapd' installed?"
     return
   fi
 
@@ -572,21 +586,21 @@ EOF
   done
 
   if [[ "$ap_ip_ok" == "true" ]]; then
-    log "Emergency AP up: $ssid (${AP_IFACE_IP}, DHCP via systemd-networkd)"
+    log_info "Emergency AP up: $ssid (${AP_IFACE_IP}, DHCP via systemd-networkd)"
   else
     # Last resort so the admin can still reach the box by static IP even
     # if networkd refused the file: assign the address by hand. This does
     # NOT give a DHCP server (only networkd can do that here), so it is
     # logged as an ERROR, not treated as success.
     ip addr add "$AP_IFACE_CIDR" dev "$wifi_dev" >/dev/null 2>&1 || true
-    log "ERROR: ${AP_IFACE_IP} not assigned by systemd-networkd — no DHCP server on $wifi_dev; clients will associate but get no IP"
+    log_error "${AP_IFACE_IP} not assigned by systemd-networkd — no DHCP server on $wifi_dev; clients will associate but get no IP"
   fi
-  log "AP link state: $(networkctl status "$wifi_dev" 2>/dev/null | tr -s ' \n' ' ' | grep -o 'Network File: [^ ]*' || echo 'unknown')"
-  log "AP addresses: $(ip -4 -o addr show dev "$wifi_dev" 2>/dev/null | tr -s ' ' | cut -d' ' -f4 | tr '\n' ' ')"
+  log_info "AP link state: $(networkctl status "$wifi_dev" 2>/dev/null | tr -s ' \n' ' ' | grep -o 'Network File: [^ ]*' || echo 'unknown')"
+  log_info "AP addresses: $(ip -4 -o addr show dev "$wifi_dev" 2>/dev/null | tr -s ' ' | cut -d' ' -f4 | tr '\n' ' ')"
   if ss -lun 2>/dev/null | grep -q ":67[[:space:]]"; then
-    log "AP DHCP server: listening on UDP/67"
+    log_info "AP DHCP server: listening on UDP/67"
   else
-    log "ERROR: nothing listening on UDP/67 — systemd-networkd did not start its DHCP server"
+    log_error "Nothing listening on UDP/67 — systemd-networkd did not start its DHCP server"
   fi
 }
 
@@ -596,7 +610,7 @@ EOF
 # and restores the normal netplan-managed client.
 stop_ap_netplan() {
   local wifi_dev="$1"
-  ap_hostapd_active && log "Stopping emergency AP to attempt reconnect to primary Wi-Fi"
+  ap_hostapd_active && log_info "Stopping emergency AP to attempt reconnect to primary Wi-Fi"
   systemctl stop "$AP_HOSTAPD_UNIT" >/dev/null 2>&1 || true
   rm -f "$AP_NETWORKD_FILE" "$AP_NETWORKD_FILE_LEGACY" "$AP_STARTED_FILE"
   ap_firewall_close "$wifi_dev"
@@ -615,21 +629,21 @@ stop_ap_netplan() {
 # AP mode once the primary network is actually reachable again.
 try_reconnect_netplan() {
   local wifi_dev="$1" timeout="${WIFI_RECONNECT_TIMEOUT:-25}"
-  log "Attempting to reconnect to primary Wi-Fi (timeout ${timeout}s)"
+  log_info "Attempting to reconnect to primary Wi-Fi (timeout ${timeout}s)"
   stop_ap_netplan "$wifi_dev"
   local i
   for ((i = 0; i < timeout; i++)); do
     if wifi_connected_netplan "$wifi_dev"; then
-      log "Primary Wi-Fi reconnect succeeded after ${i}s"
+      log_info "Primary Wi-Fi reconnect succeeded after ${i}s"
       return 0
     fi
     sleep 1
   done
   if wifi_connected_netplan "$wifi_dev"; then
-    log "Primary Wi-Fi reconnect succeeded after ${timeout}s"
+    log_info "Primary Wi-Fi reconnect succeeded after ${timeout}s"
     return 0
   fi
-  log "Primary Wi-Fi reconnect failed after ${timeout}s"
+  log_warn "Primary Wi-Fi reconnect failed after ${timeout}s"
   return 1
 }
 
@@ -652,7 +666,7 @@ reconcile_ap_netplan() {
     return
   fi
   if ! command -v hostapd >/dev/null 2>&1; then
-    log "AP fallback enabled but hostapd not installed — skipping (see deploy-dashboard.sh)"
+    log_warn "AP fallback enabled but hostapd not installed — skipping (see deploy-dashboard.sh)"
     return
   fi
 
@@ -670,7 +684,7 @@ reconcile_ap_netplan() {
   fi
 
   if try_reconnect_netplan "$wifi_dev"; then
-    log "Wi-Fi reconnected — staying in client mode"
+    log_info "Wi-Fi reconnected — staying in client mode"
   else
     start_ap_netplan "$wifi_dev" "$ssid" "$password"
   fi
@@ -802,7 +816,7 @@ EOF
   chmod 644 "$STATUS_FILE"
 }
 
-log "dashboard-net-apply daemon started (config=$NET_CONFIG_FILE)"
+log_info "dashboard-net-apply daemon started (config=$NET_CONFIG_FILE)"
 mkdir -p "$STATUS_DIR"
 # Upgrade cleanup: a box provisioned before the 05- rename could still
 # carry the old, always-losing 90- file if the daemon was killed while the AP
@@ -823,7 +837,7 @@ while true; do
         old_hash=""
         [[ -f "$APPLIED_HASH_FILE" ]] && old_hash="$(cat "$APPLIED_HASH_FILE")"
         if [[ -n "$new_hash" && "$new_hash" != "$old_hash" ]]; then
-          log "net_config.json changed — reconciling ($BACKEND backend)"
+          log_info "net_config.json changed — reconciling ($BACKEND backend)"
           reconcile_wifi "$BACKEND" "$WIFI_DEV"
           if [[ "$BACKEND" == "nmcli" ]]; then
             reconcile_ap_fallback_nmcli "$WIFI_DEV"

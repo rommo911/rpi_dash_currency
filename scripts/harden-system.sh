@@ -19,7 +19,8 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-INSTALL_DIR="${INSTALL_DIR:-$(cd "$SCRIPT_DIR/.." && pwd)}"
+# Force a static install location under the kiosk user's home for predictable paths
+INSTALL_DIR="${INSTALL_DIR:-/home/kiosk/currency-dashboard}"
 FILES_DIR="$SCRIPT_DIR/files"
 APP_PORT="${APP_PORT:-80}"
 HTTPS_PORT="${HTTPS_PORT:-443}"
@@ -33,7 +34,7 @@ if [[ $EUID -eq 0 ]]; then
   exit 1
 fi
 
-log "1/11 Removing unneeded pre-installed packages"
+log_info "1/11 Removing unneeded pre-installed packages"
 # Only relevant on Raspberry Pi OS "Desktop"/"Full" images, which bundle a
 # bunch of apps a dedicated kiosk display never uses. Each is checked with
 # dpkg -s first, so this is a no-op on Lite (none of these are installed
@@ -57,61 +58,37 @@ if [[ "${DO_CLEANUP,,}" != "n" ]]; then
   done
   dpkg -l 'libreoffice*' 2>/dev/null | grep -q '^ii' && TO_REMOVE+=("libreoffice*")
   if [[ "${#TO_REMOVE[@]}" -gt 0 ]]; then
-    log "Removing: ${TO_REMOVE[*]}"
+    log_info "Removing: ${TO_REMOVE[*]}"
     sudo apt purge -y "${TO_REMOVE[@]}"
     sudo apt autoremove -y
   else
-    log "None of the known bloat packages are installed — nothing to remove."
+    log_info "None of the known bloat packages are installed — nothing to remove."
   fi
 else
-  log "Skipping cleanup."
+  log_info "Skipping cleanup."
 fi
 
-log "2/11 Updating system packages (this can take a while on first boot)"
+log_info "2/11 Updating system packages (this can take a while on first boot)"
 sudo apt update
 sudo apt full-upgrade -y
 sudo apt autoremove -y
 
-log "3/11 Installing security tooling"
+log_info "3/11 Installing security tooling"
 sudo apt install -y ufw fail2ban unattended-upgrades curl git
 
 # ---------------------------------------------------------------------------
-log "4/11 Admin user"
-if is_auto; then
-  log "Auto mode: keeping the current default user unchanged. No extra sudo user is created unless you explicitly ask for one later."
+log_info "4/11 Admin user: ensure kiosk user exists"
+# Create a kiosk user unconditionally (idempotent). This keeps paths static
+if ! id kiosk >/dev/null 2>&1; then
+  sudo adduser --disabled-password --gecos "" kiosk
+  sudo usermod -aG sudo kiosk || true
+  log_info "Created user 'kiosk' and added to sudo group"
 else
-  read -rp "Create a new sudo user? [y/N]: " DO_NEW_USER
-  if [[ "${DO_NEW_USER,,}" == "y" ]]; then
-    read -rp "New username: " NEW_USER
-    if [[ -z "$NEW_USER" ]]; then
-      warn "No username entered — skipping user creation."
-    elif id "$NEW_USER" &>/dev/null; then
-      warn "User '$NEW_USER' already exists — skipping creation."
-    else
-      sudo adduser --gecos "" "$NEW_USER"
-      sudo usermod -aG "$(id -Gn "$USER" | tr ' ' ',')" "$NEW_USER" 2>/dev/null || true
-      sudo usermod -aG sudo "$NEW_USER"
-    fi
-    CURRENT_USER="$(whoami)"
-    if [[ -n "$NEW_USER" && "$CURRENT_USER" != "$NEW_USER" ]]; then
-      read -rp "Lock login for current user '$CURRENT_USER'? Only do this once you've confirmed '$NEW_USER' can log in and sudo. [y/N]: " LOCK_OLD
-      if [[ "${LOCK_OLD,,}" == "y" ]]; then
-        sudo passwd -l "$CURRENT_USER"
-        warn "'$CURRENT_USER' password login is now locked. Log in as '$NEW_USER' from now on."
-      fi
-    fi
-  fi
-
-  read -rp "Change the password for the current user ($(whoami))? [y/N]: " DO_PASSWD
-  if [[ "${DO_PASSWD,,}" == "y" ]]; then
-    passwd
-  else
-    log "Keeping the current user and leaving its password unchanged."
-  fi
+  log_info "User 'kiosk' already exists"
 fi
 
 # ---------------------------------------------------------------------------
-log "5/11 Hostname"
+log_info "5/11 Hostname"
 if is_auto; then
   NEW_HOSTNAME="prices-dashboard"
 else
@@ -123,11 +100,11 @@ if [[ -n "$NEW_HOSTNAME" ]]; then
   else
     sudo hostnamectl set-hostname "$NEW_HOSTNAME"
   fi
-  log "Hostname set to $NEW_HOSTNAME (takes effect after reboot)"
+  log_info "Hostname set to $NEW_HOSTNAME (takes effect after reboot)"
 fi
 
 # ---------------------------------------------------------------------------
-log "6/11 Timezone and NTP"
+log_info "6/11 Timezone and NTP"
 sudo timedatectl set-timezone Asia/Damascus
 # set-ntp true both syncs now (via systemd-timesyncd) and persists as an
 # enabled system setting — timesyncd starts automatically on every future
@@ -136,7 +113,7 @@ sudo timedatectl set-ntp true
 timedatectl status | grep -E 'Time zone|NTP service|System clock synchronized' || true
 
 # ---------------------------------------------------------------------------
-log "7/11 Firewall (ufw)"
+log_info "7/11 Firewall (ufw)"
 ask "Dashboard port to allow through the firewall [${APP_PORT}]: " "$APP_PORT" APP_PORT
 ask "Admin HTTPS port to allow through the firewall [${HTTPS_PORT}]: " "$HTTPS_PORT" HTTPS_PORT
 ask "Restrict dashboard/SSH access to a LAN subnet (e.g. 192.168.1.0/24)? Leave blank to allow from anywhere: " "" LAN_SUBNET
@@ -156,7 +133,7 @@ fi
 sudo ufw --force enable
 
 # ---------------------------------------------------------------------------
-log "8/11 Hardening SSH (root login disabled; password auth kept ON as requested)"
+log_info "8/11 Hardening SSH (root login disabled; password auth kept ON as requested)"
 # A drop-in under sshd_config.d/, not a sed edit of the main sshd_config —
 # Debian's default sshd_config already Includes that directory near the
 # top, so these directives win the same way in-place edits used to,
@@ -166,13 +143,13 @@ render_template "$FILES_DIR/ssh/currency-dashboard-hardening.conf" \
 sudo systemctl restart ssh 2>/dev/null || sudo systemctl restart sshd
 
 # ---------------------------------------------------------------------------
-log "9/11 fail2ban for SSH"
+log_info "9/11 fail2ban for SSH"
 render_template "$FILES_DIR/fail2ban/sshd-jail.local" /etc/fail2ban/jail.local
 sudo systemctl enable --now fail2ban
 sudo systemctl restart fail2ban
 
 # ---------------------------------------------------------------------------
-log "10/11 Automatic security updates + system-wide log limits (errors only, 1 week max)"
+log_info "10/11 Automatic security updates + system-wide log limits (errors only, 1 week max)"
 render_template "$FILES_DIR/apt/51unattended-upgrades-security" /etc/apt/apt.conf.d/51unattended-upgrades-security
 render_template "$FILES_DIR/apt/20auto-upgrades" /etc/apt/apt.conf.d/20auto-upgrades
 sudo systemctl enable --now unattended-upgrades
@@ -190,7 +167,7 @@ render_template "$FILES_DIR/journald/10-currency-dashboard-limits.conf" \
 sudo systemctl restart systemd-journald
 
 # ---------------------------------------------------------------------------
-log "11/11 Optional: emergency Wi-Fi AP fallback"
+log_info "11/11 Optional: emergency Wi-Fi AP fallback"
 if is_auto; then
   DO_AP_FALLBACK="y"
 else
@@ -212,7 +189,7 @@ if [[ "${DO_AP_FALLBACK,,}" == "y" ]]; then
 fi
 
 # ---------------------------------------------------------------------------
-log "System summary"
+log_info "System summary"
 sudo ufw status verbose
 echo
 sudo fail2ban-client status sshd || true

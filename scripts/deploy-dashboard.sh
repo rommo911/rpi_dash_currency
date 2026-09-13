@@ -30,7 +30,9 @@
 set -euo pipefail
 
 REPO_URL="${REPO_URL:-https://github.com/rommo911/rpi_dash_currency.git}"
-INSTALL_DIR="${INSTALL_DIR:-$HOME/currency-dashboard}"
+# Deploy into a fixed location under the kiosk user's home to keep paths
+# static and predictable.
+INSTALL_DIR="${INSTALL_DIR:-/home/kiosk/currency-dashboard}"
 SERVICE_NAME="currency-dashboard"
 APP_PORT="${APP_PORT:-80}"
 HTTPS_PORT="${HTTPS_PORT:-443}"
@@ -68,28 +70,36 @@ if ! is_headless; then
   model=""
   [[ -f /proc/device-tree/model ]] && model="$(tr -d '\0' < /proc/device-tree/model)"
   if [[ "$model" == *"Zero"* && "$model" != *"Zero 2"* ]]; then
-    warn "This looks like a Pi Zero / Zero W — it's quite weak for a browser."
-    warn "If it has no display attached, re-run with HEADLESS=true instead. Continuing with kiosk setup as requested."
+    log_warn "This looks like a Pi Zero / Zero W — it's quite weak for a browser."
+    log_warn "If it has no display attached, re-run with HEADLESS=true instead. Continuing with kiosk setup as requested."
   fi
 fi
 
-log "1/13 Installing system dependencies"
+log_info "1/13 Installing system dependencies"
 sudo apt update
 sudo apt install -y git python3-venv python3-pip curl openssl avahi-daemon fonts-noto-core
 
 CHROMIUM_BIN=""
 if is_headless; then
-  log "HEADLESS=true — skipping Chromium/kiosk setup"
+  log_info "HEADLESS=true — skipping Chromium/kiosk setup"
 else
   CHROMIUM_BIN="$(command -v chromium-browser || command -v chromium || true)"
   if [[ -z "$CHROMIUM_BIN" ]]; then
-    log "Installing Chromium"
+    log_info "Installing Chromium"
     sudo apt install -y chromium-browser 2>/dev/null || sudo apt install -y chromium
     CHROMIUM_BIN="$(command -v chromium-browser || command -v chromium)"
   fi
 fi
 
-log "2/13 Cloning/updating repository into $INSTALL_DIR"
+# Ensure kiosk user and home exist before cloning into /home/kiosk
+if ! id kiosk >/dev/null 2>&1; then
+  log_info "Creating kiosk user"
+  sudo adduser --disabled-password --gecos "" kiosk
+  sudo usermod -aG sudo kiosk || true
+fi
+sudo mkdir -p /home/kiosk
+sudo chown "$USER":"$USER" /home/kiosk 2>/dev/null || true
+log_info "2/13 Cloning/updating repository into $INSTALL_DIR"
 if [[ -d "$INSTALL_DIR/.git" ]]; then
   # A checkout from before data.json/config.py were gitignored may still
   # have them TRACKED with local (real, live) modifications — untrack
@@ -115,7 +125,14 @@ FILES_DIR="$INSTALL_DIR/scripts/files"
 # shellcheck disable=SC1091
 source "$INSTALL_DIR/scripts/lib.sh"
 
-log "3/13 Setting up local config (data.json, .env, net_config.json, auto-update.conf)"
+# Use kiosk as the runtime user for installed units and files
+export RUN_USER="kiosk"
+export HOME="/home/kiosk"
+export USER="kiosk"
+sudo mkdir -p "$INSTALL_DIR" || true
+sudo chown -R "$USER":"$USER" "$INSTALL_DIR" 2>/dev/null || true
+
+log_info "3/13 Setting up local config (data.json, .env, net_config.json, auto-update.conf)"
 # These files are gitignored and never committed as themselves — copied
 # from their tracked templates only if missing, so a later `git reset --hard`
 # (see scripts/auto-update.sh) can never touch live prices, the real admin
@@ -129,6 +146,17 @@ if [[ ! -f "$INSTALL_DIR/.env" ]]; then
   chmod 600 "$INSTALL_DIR/.env"
   NEW_ENV=true
 fi
+# Ensure a default LOG_LEVEL if not present (WARN by default)
+if ! grep -q '^LOG_LEVEL=' "$INSTALL_DIR/.env" 2>/dev/null; then
+  echo "LOG_LEVEL=WARN" | sudo tee -a "$INSTALL_DIR/.env" >/dev/null
+  sudo chmod 600 "$INSTALL_DIR/.env"
+fi
+
+# Install system journald limits to reduce SD wear (warning level, 3 days)
+log_info "Applying system journald limits (3 days, warning level)"
+render_template "$FILES_DIR/journald/10-currency-dashboard-limits.conf" \
+  /etc/systemd/journald.conf.d/10-currency-dashboard-limits.conf
+sudo systemctl restart systemd-journald || warn "Failed to restart systemd-journald"
 if [[ ! -f "$INSTALL_DIR/scripts/auto-update.conf" ]]; then
   cp "$INSTALL_DIR/scripts/auto-update.conf.example" "$INSTALL_DIR/scripts/auto-update.conf"
 fi
@@ -193,22 +221,26 @@ env_path.write_text("\n".join(out) + "\n", encoding="utf-8")
 PYEOF
     chmod 600 "$INSTALL_DIR/.env"
     unset ADMIN_PW1 ADMIN_PW2
-    log "Admin panel password set."
+    log_info "Admin panel password set."
   else
     warn "No custom password set — put ADMIN_PASSWORD in $INSTALL_DIR/.env before relying on the admin panel."
   fi
 fi
 
-log "4/13 Creating virtualenv and installing Python deps"
+log_info "4/13 Creating virtualenv and installing Python deps"
 python3 -m venv "$INSTALL_DIR/.venv"
 "$INSTALL_DIR/.venv/bin/pip" install --upgrade pip
 "$INSTALL_DIR/.venv/bin/pip" install -r "$INSTALL_DIR/requirements.txt"
 
-log "5/13 Generating/renewing the self-signed HTTPS certificate"
+# Ensure logs directory exists and is writable by kiosk
+sudo mkdir -p "$INSTALL_DIR/logs"
+sudo chown -R kiosk:kiosk "$INSTALL_DIR/logs" || true
+
+log_info "5/13 Generating/renewing the self-signed HTTPS certificate"
 INSTALL_DIR="$INSTALL_DIR" bash "$INSTALL_DIR/scripts/generate-cert.sh" || \
   warn "Certificate generation failed — the admin panel will fall back to HTTP only until this is fixed."
 
-log "6/13 Installing systemd service"
+log_info "6/13 Installing systemd service"
 render_template "$FILES_DIR/systemd/currency-dashboard.service" \
   "/etc/systemd/system/${SERVICE_NAME}.service" \
   "INSTALL_DIR=$INSTALL_DIR" "APP_PORT=$APP_PORT" "HTTPS_PORT=$HTTPS_PORT" "RUN_USER=$USER"
@@ -216,7 +248,7 @@ render_template "$FILES_DIR/systemd/currency-dashboard.service" \
 sudo systemctl daemon-reload
 sudo systemctl enable --now "${SERVICE_NAME}"
 
-log "7/13 Firewall: opening the HTTP and HTTPS ports"
+log_info "7/13 Firewall: opening the HTTP and HTTPS ports"
 # Deliberately NOT gated on "is ufw active right now" — that check raced
 # harden-system.sh's own `ufw --force enable` a moment earlier on at
 # least one real deploy (ufw reported inactive at this exact instant, so
@@ -261,12 +293,12 @@ if command -v ufw >/dev/null 2>&1; then
   sudo ufw allow from "$AP_SUBNET" to any port "$HTTPS_PORT" proto tcp
   sudo ufw allow from "$AP_SUBNET" to any port 22 proto tcp
   sudo ufw status 2>/dev/null | grep -q "Status: active" || \
-    log "ufw is installed but not active yet — rule was queued and will apply once ufw is enabled."
+    log_warn "ufw is installed but not active yet — rule was queued and will apply once ufw is enabled."
 else
-  log "ufw not installed — skipping (nothing to open)"
+  log_warn "ufw not installed — skipping (nothing to open)"
 fi
 
-log "8/13 Installing the auto-updater (git pull + cert renewal every 6h)"
+log_info "8/13 Installing the auto-updater (git pull + cert renewal every 6h)"
 SYSTEMCTL_BIN="$(command -v systemctl)"
 SUDOERS_FILE="/etc/sudoers.d/${SERVICE_NAME}-updater"
 # Rendered to a LOCAL temp file first (not straight to /etc/sudoers.d)
@@ -294,7 +326,10 @@ render_template "$FILES_DIR/systemd/currency-dashboard-updater.timer" \
 sudo systemctl daemon-reload
 sudo systemctl enable --now "${SERVICE_NAME}-updater.timer"
 
-log "9/13 Securing the admin panel: fail2ban jail for repeated failed logins"
+# Install logrotate config for app logs
+install_file "$FILES_DIR/logrotate/currency-dashboard" "/etc/logrotate.d/currency-dashboard"
+
+log_info "9/13 Securing the admin panel: fail2ban jail for repeated failed logins"
 if command -v fail2ban-client >/dev/null 2>&1; then
   render_template "$FILES_DIR/fail2ban/currency-dashboard.filter" \
     "/etc/fail2ban/filter.d/${SERVICE_NAME}.conf"
@@ -303,10 +338,10 @@ if command -v fail2ban-client >/dev/null 2>&1; then
     "SERVICE_NAME=$SERVICE_NAME" "APP_PORT=$APP_PORT" "HTTPS_PORT=$HTTPS_PORT"
   sudo systemctl restart fail2ban
 else
-  log "fail2ban not installed (run provision-pi.sh/harden-system.sh first for full hardening) — skipping the admin-login jail"
+  log_warn "fail2ban not installed (run provision-pi.sh/harden-system.sh first for full hardening) — skipping the admin-login jail"
 fi
 
-log "10/13 Installing the network/reboot reconciler (Wi-Fi + hotspot fallback + reboot from the admin panel)"
+log_info "10/13 Installing the network/reboot reconciler (Wi-Fi + hotspot fallback + reboot from the admin panel)"
 # The Flask app itself never holds sudo/root for this feature — it only
 # ever writes plain files into its own workspace (net_config.json,
 # reboot.request). This root-run daemon (no User= in the unit, same as
@@ -348,13 +383,13 @@ sudo systemctl restart dashboard-net-apply
 # default config, so that must never be left enabled to auto-start at
 # boot against an empty/absent config.
 if ! command -v nmcli >/dev/null 2>&1; then
-  log "No NetworkManager detected — installing netplan-backend Wi-Fi fallback dependencies (hostapd, iw)"
+  log_warn "No NetworkManager detected — installing netplan-backend Wi-Fi fallback dependencies (hostapd, iw)"
   sudo apt-get install -y hostapd iw || \
-    warn "Failed to install hostapd/iw — the emergency Wi-Fi hotspot fallback won't work until this is resolved (Wi-Fi client networking is unaffected)."
+    log_warn "Failed to install hostapd/iw — the emergency Wi-Fi hotspot fallback won't work until this is resolved (Wi-Fi client networking is unaffected)."
   sudo systemctl disable --now hostapd >/dev/null 2>&1 || true
 fi
 
-log "Waiting for the dashboard to respond on port ${APP_PORT}"
+log_info "Waiting for the dashboard to respond on port ${APP_PORT}"
 for _ in $(seq 1 30); do
   if curl -s "http://localhost:${APP_PORT}/" >/dev/null; then
     break
@@ -362,7 +397,7 @@ for _ in $(seq 1 30); do
   sleep 1
 done
 
-log "11/13 Installing the post-boot health check (auto-rollback on a bad boot)"
+log_info "11/13 Installing the post-boot health check (auto-rollback on a bad boot)"
 # Runs once, ~2 minutes after every boot: if the service is active and
 # /api/data returns valid JSON, it records the current commit as
 # "last-known-good" (a git tag) and backs up the small gitignored runtime
@@ -419,7 +454,7 @@ configure_boot_files() {
       # via /sys/class/drm/card0-HDMI-A-1), not something board-specific
       # we're guessing at.
       ensure_key_tokens_in_file --sudo "$armbian_env" "extraargs" "$FILES_DIR/boot/armbian-extraargs-tokens.txt"
-      log "Ensured forced HDMI output mode is present in $armbian_env (extraargs=) — takes effect after a reboot"
+      log_info "Ensured forced HDMI output mode is present in $armbian_env (extraargs=) — takes effect after a reboot"
 
       # armbianEnv.txt's default `console=both` puts BOTH the serial UART
       # and tty1 in the kernel's `console=` list, so every kernel/systemd
@@ -434,7 +469,7 @@ configure_boot_files() {
       # `bootlogo`/`splash=verbose` — those only matter to plymouth, which
       # isn't installed on this image, so they're already inert.
       ensure_key_value_in_file --sudo "$armbian_env" "console" "serial"
-      log "Silenced kernel/systemd boot messages on the HDMI display in $armbian_env (console=serial; still visible over the serial UART) — takes effect after a reboot"
+      log_info "Silenced kernel/systemd boot messages on the HDMI display in $armbian_env (console=serial; still visible over the serial UART) — takes effect after a reboot"
     else
       warn "No Armbian boot environment file was found at /boot/armbianEnv.txt or /boot/firmware/armbianEnv.txt — HDMI force-enable and silent-boot tweaks skipped."
     fi
@@ -443,14 +478,14 @@ configure_boot_files() {
 
   if [[ -f "$config" ]]; then
     ensure_block_in_file --sudo "$config" "currency-dashboard-boot" "$FILES_DIR/boot/config-txt-append.conf"
-    log "Ensured HDMI-always-on / silent-boot settings are present in $config"
+    log_info "Ensured HDMI-always-on / silent-boot settings are present in $config"
   else
-    warn "Could not find $config — skipping boot config"
+    log_warn "Could not find $config — skipping boot config"
   fi
 
   if [[ -f "$cmdline" ]]; then
     ensure_tokens_in_cmdline --sudo "$cmdline" "$FILES_DIR/boot/cmdline-txt-tokens.txt"
-    log "Ensured silent-boot/no-console-blanking tokens are present in $cmdline"
+    log_info "Ensured silent-boot/no-console-blanking tokens are present in $cmdline"
   fi
 }
 
@@ -491,7 +526,7 @@ reduce_network_wait_online_delay() {
     if systemctl list-unit-files "$unit" 2>/dev/null | grep -q "$unit"; then
       render_template "$FILES_DIR/systemd/wait-online-fast-timeout.conf" \
         "/etc/systemd/system/${unit}.d/currency-dashboard-fast-timeout.conf"
-      log "Capped $unit's start timeout at 5s (was blocking boot far longer than the dashboard needs)"
+      log_info "Capped $unit's start timeout at 5s (was blocking boot far longer than the dashboard needs)"
     fi
   done
   sudo systemctl daemon-reload
@@ -499,12 +534,12 @@ reduce_network_wait_online_delay() {
 reduce_network_wait_online_delay
 
 if is_headless; then
-  log "12/13 Skipping kiosk setup (headless)"
+  log_info "12/13 Skipping kiosk setup (headless)"
   echo "This board has no display configured — access the dashboard from"
   echo "another device's browser instead: http://$(hostname -I 2>/dev/null | awk '{print $1}'):${APP_PORT}/"
 else
 
-log "12/13 Configuring kiosk autostart"
+log_info "12/13 Configuring kiosk autostart"
 configure_boot_files
 # Wrapped in `sh -c '...; exec chromium ...'` rather than the bare
 # chromium invocation: Chromium leaves SingletonLock/SingletonSocket/
@@ -531,7 +566,7 @@ setup_labwc() {
   if is_raspi_os && command -v raspi-config >/dev/null 2>&1; then
     sudo raspi-config nonint do_boot_behaviour B4 || true
   fi
-  log "Configured labwc autostart (Raspberry Pi OS Bookworm / Wayland desktop)"
+  log_info "Configured labwc autostart (Raspberry Pi OS Bookworm / Wayland desktop)"
 }
 
 setup_wayfire() {
@@ -540,7 +575,7 @@ setup_wayfire() {
   if is_raspi_os && command -v raspi-config >/dev/null 2>&1; then
     sudo raspi-config nonint do_boot_behaviour B4 || true
   fi
-  log "Configured wayfire autostart"
+  log_info "Configured wayfire autostart"
 }
 
 setup_lxde() {
@@ -548,7 +583,7 @@ setup_lxde() {
   if is_raspi_os && command -v raspi-config >/dev/null 2>&1; then
     sudo raspi-config nonint do_boot_behaviour B4 || true
   fi
-  log "Configured LXDE autostart (older Raspberry Pi OS desktop)"
+  log_info "Configured LXDE autostart (older Raspberry Pi OS desktop)"
 }
 
 setup_console_x() {
@@ -622,7 +657,7 @@ setup_console_x() {
     "/etc/systemd/system/getty@tty1.service.d/autologin.conf" \
     "RUN_USER=$USER"
   sudo systemctl daemon-reload
-  log "Configured tty1 autologin as $USER (takes effect on next boot, or: sudo systemctl restart getty@tty1)"
+  log_info "Configured tty1 autologin as $USER (takes effect on next boot, or: sudo systemctl restart getty@tty1)"
 
   # `.hushlogin` is the standard mechanism (checked by login/PAM's
   # pam_motd and the shell itself) to suppress the MOTD banner and "Last
@@ -634,9 +669,9 @@ setup_console_x() {
 
   if is_raspi_os && command -v raspi-config >/dev/null 2>&1; then
     sudo raspi-config nonint do_boot_behaviour B2 || true
-    log "Configured console autologin + startx kiosk (Raspberry Pi OS Lite)"
+    log_info "Configured console autologin + startx kiosk (Raspberry Pi OS Lite)"
   else
-    log "Configured generic X11 kiosk launch in ~/.bash_profile ~/.xinitrc (Armbian/Orange Pi)"
+    log_info "Configured generic X11 kiosk launch in ~/.bash_profile ~/.xinitrc (Armbian/Orange Pi)"
   fi
 }
 
@@ -675,7 +710,7 @@ esac
 
 fi  # is_headless
 
-log "13/13 Done"
+log_info "13/13 Done"
 echo "Dashboard service:   sudo systemctl status ${SERVICE_NAME}"
 echo "Dashboard URL:       http://localhost:${APP_PORT}/"
 if [[ -f "$INSTALL_DIR/ssl/cert.pem" ]]; then

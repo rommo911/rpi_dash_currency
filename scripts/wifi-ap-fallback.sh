@@ -38,8 +38,8 @@ source "$SCRIPT_DIR/lib.sh"
 
 AP_CONN_NAME="Emergency-AP"
 AP_IP="192.168.50.1/24"
-WIFI_TIMEOUT="${WIFI_TIMEOUT:-30}"
-CHECK_INTERVAL="${CHECK_INTERVAL:-15}"
+WIFI_TIMEOUT="${WIFI_TIMEOUT:-45}"
+CHECK_INTERVAL="${CHECK_INTERVAL:-45}"
 
 CONFIG_DIR="/etc/wifi-ap-fallback"
 CONFIG_FILE="$CONFIG_DIR/config"
@@ -103,7 +103,7 @@ pick_primary_connection() {
   PRIMARY_CONN="${conns[$((sel - 1))]}"
 }
 
-log "Choosing the primary Wi-Fi connection"
+log_info "Choosing the primary Wi-Fi connection"
 pick_primary_connection
 echo "Primary Wi-Fi connection: $PRIMARY_CONN"
 
@@ -111,7 +111,7 @@ echo "Primary Wi-Fi connection: $PRIMARY_CONN"
 sudo nmcli connection modify "$PRIMARY_CONN" connection.autoconnect yes connection.autoconnect-priority 100
 
 # ---------------------------------------------------------------------------
-log "Emergency AP configuration"
+log_info "Emergency AP configuration"
 
 if [[ -z "${AP_SSID:-}" ]]; then
   read -rp "Emergency AP SSID [Pi-Emergency]: " AP_SSID
@@ -128,7 +128,7 @@ if [[ -z "${AP_PASSWORD:-}" ]]; then
 fi
 
 # ---------------------------------------------------------------------------
-log "Creating the emergency AP profile"
+log_info "Creating the emergency AP profile"
 # Idempotent: delete-then-recreate rather than modify-in-place, so a
 # re-run with a different SSID/password never leaves stale settings behind.
 sudo nmcli connection delete "$AP_CONN_NAME" >/dev/null 2>&1 || true
@@ -141,7 +141,7 @@ sudo nmcli connection modify "$AP_CONN_NAME" wifi-sec.key-mgmt wpa-psk
 sudo nmcli connection modify "$AP_CONN_NAME" wifi-sec.psk "$AP_PASSWORD"
 
 # ---------------------------------------------------------------------------
-log "Saving watchdog configuration"
+log_info "Saving watchdog configuration"
 sudo mkdir -p "$CONFIG_DIR"
 sudo chmod 700 "$CONFIG_DIR"
 sudo tee "$CONFIG_FILE" >/dev/null <<EOF
@@ -158,12 +158,12 @@ sudo chmod 600 "$CONFIG_FILE"
 # generate-cert.sh's cert.meta for the same reason.
 
 # ---------------------------------------------------------------------------
-log "Installing the watchdog"
+log_info "Installing the watchdog"
 render_template "$FILES_DIR/network/wifi-ap-fallback-watchdog.sh" "$WATCHDOG"
 sudo chmod 755 "$WATCHDOG"
 
 # ---------------------------------------------------------------------------
-log "Installing the systemd service"
+log_info "Installing the systemd service"
 render_template "$FILES_DIR/systemd/wifi-ap-fallback.service" "$SERVICE_FILE" "WATCHDOG_PATH=$WATCHDOG"
 
 sudo systemctl daemon-reload

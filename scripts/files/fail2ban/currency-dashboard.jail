@@ -1,9 +1,9 @@
-[{{SERVICE_NAME}}]
+[currency-dashboard]
 enabled      = true
-port         = {{APP_PORT}},{{HTTPS_PORT}}
-filter       = {{SERVICE_NAME}}
+port         = 80,443
+filter       = currency-dashboard
 backend      = systemd
-journalmatch = _SYSTEMD_UNIT={{SERVICE_NAME}}.service
+journalmatch = _SYSTEMD_UNIT=currency-dashboard.service
 bantime      = 1h
 findtime     = 10m
 maxretry     = 6

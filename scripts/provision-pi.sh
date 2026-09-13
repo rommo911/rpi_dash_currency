@@ -38,7 +38,8 @@ done
 export AUTO_DEFAULT
 
 REPO_URL="${REPO_URL:-https://github.com/rommo911/rpi_dash_currency.git}"
-INSTALL_DIR="${INSTALL_DIR:-$HOME/currency-dashboard}"
+# Use a fixed install location under the kiosk home for predictable paths
+INSTALL_DIR="${INSTALL_DIR:-/home/kiosk/currency-dashboard}"
 HEADLESS="${HEADLESS:-false}"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -51,6 +52,9 @@ else
   log()  { echo -e "\n\033[1;36m==> $*\033[0m"; }
   warn() { echo -e "\033[1;33m$*\033[0m"; }
   is_auto() { [[ "$AUTO_DEFAULT" == "true" ]]; }
+  log_info() { echo -e "\n\033[1;36m==> $*\033[0m"; }
+  
+  
 fi
 
 if [[ $EUID -eq 0 ]]; then
@@ -181,7 +185,7 @@ connect_wifi_auto() {
   # regardless of whether it's reachable right now.
   if ! command -v nmcli >/dev/null 2>&1; then
     if has_netplan; then
-      log "nmcli not found but netplan is — configuring default Wi-Fi profile 'dashboard' via netplan (auto mode)"
+      log_info "nmcli not found but netplan is — configuring default Wi-Fi profile 'dashboard' via netplan (auto mode)"
       write_netplan_wifi "dashboard" "123456789" || \
         warn "Could not write netplan Wi-Fi config — relying on Ethernet."
       return 0
@@ -202,7 +206,7 @@ connect_wifi_auto() {
     return 1
   fi
 
-  log "Configuring default Wi-Fi profile 'dashboard' (auto mode)"
+  log_info "Configuring default Wi-Fi profile 'dashboard' (auto mode)"
   sudo nmcli connection delete dashboard >/dev/null 2>&1 || true
   sudo nmcli connection add \
     type wifi ifname "$wifi_dev" con-name dashboard ssid dashboard autoconnect yes \
@@ -241,7 +245,7 @@ connect_wifi_netplan() {
 connect_wifi() {
   if ! command -v nmcli >/dev/null 2>&1; then
     if has_netplan; then
-      log "nmcli not found but netplan is — configuring Wi-Fi via netplan instead"
+      log_info "nmcli not found but netplan is — configuring Wi-Fi via netplan instead"
       connect_wifi_netplan
       return
     fi
@@ -271,7 +275,7 @@ connect_wifi() {
     return 1
   fi
 
-  log "Scanning for networks on $WIFI_DEV..."
+  log_info "Scanning for networks on $WIFI_DEV..."
   sudo nmcli device wifi rescan ifname "$WIFI_DEV" >/dev/null 2>&1 || true
   sleep 2
 
@@ -364,17 +368,17 @@ connect_wifi() {
   fi
 }
 
-log "1/2 Network connectivity — apt and git both need this before anything else can run"
+log_info "1/2 Network connectivity — apt and git both need this before anything else can run"
 WIFI_IP=""
 if is_auto; then
   if check_internet; then
-    log "Internet already reachable (Ethernet, or Wi-Fi already configured)."
+    log_info "Internet already reachable (Ethernet, or Wi-Fi already configured)."
   else
     connect_wifi_auto || true
   fi
 else
   if check_internet; then
-    log "Internet already reachable (Ethernet, or Wi-Fi already configured)."
+    log_info "Internet already reachable (Ethernet, or Wi-Fi already configured)."
     read -rp "Reconfigure Wi-Fi anyway? [y/N]: " RECONFIGURE_WIFI
   else
     warn "No internet connection detected yet — nothing can be installed until one is available."
@@ -407,7 +411,7 @@ if ! check_internet; then
 fi
 
 # ---------------------------------------------------------------------------
-log "2/2 Getting the dashboard repo onto this Pi"
+log_info "2/2 Getting the dashboard repo onto this Pi"
 # Untrack data.json/config.py first if this checkout predates them being
 # gitignored — a plain `git pull`/reset would otherwise refuse or (worse,
 # for reset --hard) silently delete a live-modified copy of either file.
@@ -415,16 +419,16 @@ log "2/2 Getting the dashboard repo onto this Pi"
 # handoff to deploy-dashboard.sh repeats this same update anyway, so
 # failures here are non-fatal.
 if [[ "$RUNNING_FROM_CLONE" == true ]]; then
-  log "Already running from a clone at $REPO_ROOT — using it directly"
+  log_info "Already running from a clone at $REPO_ROOT — using it directly"
   git -C "$REPO_ROOT" rm --cached -q data.json config.py 2>/dev/null || true
   git -C "$REPO_ROOT" pull || warn "git pull failed — continuing with the code already on disk"
   INSTALL_DIR="$REPO_ROOT"
 elif [[ -d "$INSTALL_DIR/.git" ]]; then
-  log "Repo already present at $INSTALL_DIR — pulling latest"
+  log_info "Repo already present at $INSTALL_DIR — pulling latest"
   git -C "$INSTALL_DIR" rm --cached -q data.json config.py 2>/dev/null || true
   git -C "$INSTALL_DIR" pull || warn "git pull failed — continuing with the code already on disk"
 else
-  log "Cloning $REPO_URL into $INSTALL_DIR"
+  log_info "Cloning $REPO_URL into $INSTALL_DIR"
   sudo apt update && sudo apt install -y git
   git clone "$REPO_URL" "$INSTALL_DIR"
 fi
