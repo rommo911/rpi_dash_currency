@@ -1,0 +1,162 @@
+:root {
+  --bg-1: #0f172a;
+  --bg-2: #1e1b4b;
+  --card-bg: rgba(255, 255, 255, 0.06);
+  --card-border: rgba(255, 255, 255, 0.12);
+  --text-main: #f8fafc;
+  --text-dim: #94a3b8;
+  --accent: #22d3ee;
+  --dashboard-font: "Noto Sans Arabic";
+}
+* { box-sizing: border-box; }
+html, body { height: 100%; }
+body {
+  margin: 0;
+  font-family: var(--dashboard-font);
+  background: radial-gradient(circle at 20% 20%, var(--bg-2), var(--bg-1) 60%);
+  color: var(--text-main);
+  overflow: hidden;
+}
+/* Screen is inset 5% on every side from the viewport edges — that 5%
+   margin is the only space not used by the header or the price grid. */
+.screen {
+  position: fixed;
+  top: 5vh; bottom: 5vh; left: 5vw; right: 5vw;
+  display: flex;
+  flex-direction: column;
+}
+/* Fixed 15% of the full screen height, regardless of how much text the
+   title/subtitle hold — long text shrinks via clamp() rather than
+   growing this band. */
+.header {
+  flex: 0 0 auto;
+  min-height: 10vh;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  gap: 1vh;
+  overflow: visible;
+}
+.header h1 {
+  margin: 0;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+  font-size: clamp(2rem, 6vh, 5rem);
+  line-height: 1.00;
+}
+.header .sub {
+  color: var(--text-dim);
+  font-size: clamp(1.1rem, 2.5vh, 2.2rem);
+  margin: 0;
+  line-height: 1.1;
+  margin-top: 1vh;
+}
+/* Everything left after the header fills with the price grid. */
+#grid-wrap {
+  margin-top: 5vh;
+  margin-bottom: 2vh;
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+}
+.grid {
+  display: grid;
+  width: 100%;
+  height: 100%;
+  gap: 6vh 2vw;
+}
+.empty {
+  margin: auto;
+  text-align: center;
+  color: var(--text-dim);
+  font-size: clamp(1.2rem, 3vh, 2rem);
+  padding: 5%;
+  border: 1px dashed var(--card-border);
+  border-radius: 24px;
+}
+.card {
+  background: var(--card-bg);
+  border: 4px solid var(--card-border);
+  border-radius: 1.9vh;
+  text-align: center;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--card-gap, 19px);
+  overflow: hidden;
+  padding: var(--card-pad, 19px);
+  min-width: 0;
+  min-height: 0;
+}
+.icon-badge {
+  width: var(--icon-w, 90%);
+  height: var(--icon-h, auto);
+  aspect-ratio: 3 / 2;
+  border-radius: 12px;
+  overflow: hidden;
+  box-shadow: 0 8px 24px -8px rgba(0,0,0,0.5), 0 0 0 1px var(--card-border);
+  background: rgba(255,255,255,0.05);
+  flex-shrink: 0;
+}
+.icon-badge img { width: 100%; height: 100%; object-fit: fill; display: block; }
+.card .code {
+  font-size: var(--code-size, 1.8rem);
+  width: 50%;
+  color: var(--text-main);
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  font-weight: 900;
+  line-height: 1;
+}
+.card .name {
+  font-size: var(--name-size, 1.6rem);
+  color: var(--text-dim);
+  line-height: 1.9;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* The price itself is the biggest thing on a card — bigger than the
+   currency code, which is bigger than the currency name. */
+.card .value {
+  font-size: var(--value-size, 3rem);
+  width: 100%;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  color: var(--accent);
+  line-height: 1;
+  max-width: 100%;
+  overflow: visible;
+  text-overflow: clip;
+  white-space: nowrap;
+}
+/* Lives in the reserved bottom 5% margin rather than stealing height
+   from the price grid. */
+.footer {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  right: 0;
+  margin-top: 0.6vh;
+  text-align: center;
+  color: var(--text-dim);
+  font-size: clamp(0.8rem, 1.4vh, 1.1rem);
+}
+.hostinfo {
+  position: fixed;
+  left: 16px;
+  bottom: 14px;
+  font-size: 0.85rem;
+  color: var(--text-dim);
+  background: rgba(0, 0, 0, 0.35);
+  padding: 6px 12px;
+  border-radius: 8px;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.6s ease;
+}
+.hostinfo.show { opacity: 1; }

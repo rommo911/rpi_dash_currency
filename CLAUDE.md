@@ -11,7 +11,15 @@ you ONLY make things works for user without adding too uch complexity while main
 
 | Path | What |
 |---|---|
-| `app.py` | The whole app — routes *and* all HTML/CSS/JS as `render_template_string` strings. No `templates/`, no asset pipeline. |
+| `app.py` | Entrypoint only: registers hooks/routes on `core.app`, runs the HTTP(S) server. |
+| `core.py` | The one `Flask(__name__)` instance. Its own file so `routes/*.py` can import it without re-executing `app.py` as a second module (see its docstring). |
+| `config.py` | Paths, ports, and validation-limit constants. Pure data, no logic. |
+| `i18n.py` | `TRANSLATIONS` (en/ar) + `get_translations()`. Admin UI chrome only. |
+| `logging_setup.py` | Error-only logging setup (journald + rotating file), imported once for its side effect. |
+| `helpers/` | `version.py`, `storage.py` (data.json/net_config.json), `validation.py`, `flags.py`, `security.py` (auth/CSRF/HTTPS-redirect). One concern per file. |
+| `routes/` | `dashboard.py` (public), `admin.py` (currencies/settings), `admin_system.py` (Wi-Fi/updates/reboot). Each does `from core import app` and `@app.route(...)` directly — no Blueprints (would prefix `url_for()` endpoint names and break every template link). |
+| `templates/` | Real Jinja files (`dashboard.html`, `admin.html`, `admin_system.html`), loaded via `render_template()`. |
+| `static/css/`, `static/js/` | Plain CSS/JS, no build step — just files Flask serves as-is. |
 | `data.json` | Currencies + settings, written by the app. Gitignored, seeded from `data.default.json`. |
 | `.env` | `ADMIN_PASSWORD`. Gitignored, seeded from `.env.example`. |
 | `net_config.json` | Desired Wi-Fi/hotspot state, mode 600 (plaintext PSKs). Gitignored, seeded from `net_config.default.json`. |
@@ -97,5 +105,11 @@ unit — redeploys must `restart` explicitly.
 languages at key parity. Currency names and the dashboard title/subtitle are
 admin-typed free text and are never auto-translated.
 
-**Scope.** One Python file with embedded templates, targeting a Pi Zero W. No
-database, no ORM, no blueprints, no build step — don't split it up unless asked.
+**Scope.** Targets a Pi Zero W: no database, no ORM, no build step, no asset
+pipeline (CSS/JS are plain static files, not bundled/minified). Split into
+`config`/`i18n`/`helpers`/`routes`/`templates`/`static` per the layout table
+above — keep new code in the matching file rather than growing `app.py` again
+or re-merging things back into one file. Still no Blueprints: `routes/*.py`
+import the shared `app` from `core.py` and register routes directly, since
+Blueprints would prefix every endpoint name and break `url_for()` calls
+throughout the templates.

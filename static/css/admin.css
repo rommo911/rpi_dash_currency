@@ -1,0 +1,147 @@
+:root {
+  --bg-1: #0f172a;
+  --bg-2: #1e1b4b;
+  --card-bg: rgba(255, 255, 255, 0.06);
+  --card-border: rgba(255, 255, 255, 0.12);
+  --text-main: #f8fafc;
+  --text-dim: #94a3b8;
+  --accent: #22d3ee;
+  --danger: #f87171;
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  min-height: 100vh;
+  font-family: var(--dashboard-font);
+  background: radial-gradient(circle at 20% 20%, var(--bg-2), var(--bg-1) 60%);
+  color: var(--text-main);
+  padding: 32px 24px 80px;
+}
+.wrap { max-width: 860px; margin: 0 auto; }
+h1 { font-size: 1.6rem; margin: 0 0 6px; }
+p.sub { color: var(--text-dim); margin: 0 0 28px; font-size: 0.95rem; }
+.msg {
+  padding: 12px 16px;
+  border-radius: 12px;
+  margin-bottom: 20px;
+  font-size: 0.9rem;
+}
+.msg.ok { background: rgba(52,211,153,0.12); border: 1px solid rgba(52,211,153,0.4); color: #86efac; }
+.msg.err { background: rgba(248,113,113,0.12); border: 1px solid rgba(248,113,113,0.4); color: #fca5a5; }
+.row {
+  background: var(--card-bg);
+  border: 1px solid var(--card-border);
+  border-radius: 18px;
+  padding: 18px 20px;
+  margin-bottom: 14px;
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+.row.disabled { opacity: 0.55; }
+.row .thumb {
+  width: 56px;
+  height: 38px;
+  border-radius: 8px;
+  overflow: hidden;
+  background: rgba(255,255,255,0.06);
+  border: 1px solid var(--card-border);
+  flex-shrink: 0;
+}
+.row .thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.row .inline { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; flex: 1; }
+.row .code-badge {
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  font-size: 0.95rem;
+  width: 56px;
+  flex-shrink: 0;
+}
+input[type=text], input[type=number], select {
+  padding: 9px 12px;
+  font-size: 0.95rem;
+  border-radius: 10px;
+  border: 1px solid var(--card-border);
+  background: rgba(255,255,255,0.05);
+  color: var(--text-main);
+}
+input[name=name] { width: 150px; }
+input[name=symbol] { width: 150px; }
+input[name=price] { width: 100px; }
+label.chk { display: flex; align-items: center; gap: 6px; font-size: 0.85rem; color: var(--text-dim); }
+button {
+  padding: 9px 16px;
+  font-size: 0.9rem;
+  font-weight: 600;
+  border-radius: 10px;
+  border: none;
+  cursor: pointer;
+}
+button.save, a.save { background: var(--accent); color: #0f172a; }
+button.save:hover, a.save:hover { opacity: 0.9; }
+button.delete, a.delete { background: rgba(248,113,113,0.15); border: 1px solid rgba(248,113,113,0.4); color: var(--danger); }
+button.delete:hover, a.delete:hover { background: rgba(248,113,113,0.25); }
+a.save, a.delete { display: inline-block; text-decoration: none; padding: 9px 16px; font-size: 0.9rem; font-weight: 600; border-radius: 10px; }
+.add-card {
+  background: var(--card-bg);
+  border: 1px dashed var(--card-border);
+  border-radius: 18px;
+  padding: 24px;
+  margin-top: 30px;
+}
+.add-card h2 { font-size: 1.1rem; margin: 0 0 16px; }
+.add-card .fields { display: flex; flex-wrap: wrap; gap: 12px; margin-bottom: 14px; }
+.add-card .fields input[name=code] {
+  width: 150px;
+  max-width: 100%;
+  text-transform: uppercase;
+}
+.flag-choice { display: flex; gap: 18px; margin-bottom: 14px; font-size: 0.9rem; color: var(--text-dim); }
+.flag-choice label { display: flex; align-items: center; gap: 6px; }
+input[type=file] { color: var(--text-dim); font-size: 0.85rem; }
+.top-bar {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 16px;
+  margin-bottom: 20px;
+}
+.lang-form select { min-width: 140px; }
+.settings-card {
+  background: var(--card-bg);
+  border: 1px solid var(--card-border);
+  border-radius: 18px;
+  padding: 22px 24px;
+  margin-bottom: 28px;
+}
+.settings-card h2 { font-size: 1.05rem; margin: 0 0 16px; }
+.settings-card .fields { display: flex; flex-wrap: wrap; gap: 12px; align-items: flex-end; }
+.settings-card label.field-label {
+  display: block;
+  font-size: 0.8rem;
+  color: var(--text-dim);
+  margin-bottom: 6px;
+}
+.settings-card input[type=text] { width: 260px; }
+a.back {
+  display: inline-block;
+  margin-top: 30px;
+  color: var(--text-dim);
+  text-decoration: none;
+  font-size: 0.85rem;
+}
+a.back:hover { color: var(--text-main); }
+.about-box {
+  margin-top: 28px;
+  padding-top: 12px;
+  border-top: 1px solid var(--card-border);
+  color: var(--text-dim);
+  font-size: 0.78rem;
+  line-height: 1.6;
+  text-align: center;
+}
+.about-box strong {
+  color: var(--text-main);
+  font-weight: 700;
+}

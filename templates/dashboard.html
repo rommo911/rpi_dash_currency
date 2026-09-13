@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Prices Dashboard</title>
+<link rel="stylesheet" href="{{ url_for('static', filename='css/dashboard.css') }}">
+</head>
+<body>
+<div class="screen">
+  <div class="header">
+    <h1 id="dash-title">{{ settings.title }}</h1>
+    <div class="sub" id="dash-subtitle">{{ settings.subtitle }}</div>
+  </div>
+
+  <div id="grid-wrap"></div>
+
+  <div class="footer" id="footer" {% if not settings.show_updated_at %}hidden{% endif %}><div id="updated-at">Loading&hellip;</div></div>
+</div>
+<div class="hostinfo" id="hostinfo"></div>
+
+<script>window.PAGE_LOAD_VERSION = {{ version | tojson }};</script>
+<script src="{{ url_for('static', filename='js/dashboard.js') }}"></script>
+</body>
+</html>

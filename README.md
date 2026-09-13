@@ -28,7 +28,11 @@ Ships with 4 default currencies: **SYP** (new Syrian pound flag),
 
 ## Files
 
-- `app.py` — the whole app (backend + embedded HTML/CSS/JS)
+- `app.py` — entrypoint (wires up routes/hooks, runs the HTTP(S) server).
+  The app itself is split into `config.py`, `i18n.py`, `core.py`,
+  `helpers/` (data/validation/flags/security), `routes/` (one file per
+  page), `templates/` (Jinja HTML), and `static/css`/`static/js` — see
+  CLAUDE.md for what lives where
 - `.env` — gitignored project-local environment file for the preferred
   `ADMIN_PASSWORD` secret. It is created automatically from `.env.example`
   during deployment.

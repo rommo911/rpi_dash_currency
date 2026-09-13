@@ -1,0 +1,101 @@
+<!doctype html>
+<html lang="{{ lang }}" dir="{{ 'rtl' if lang == 'ar' else 'ltr' }}">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Control Panel &mdash; Currency Dashboard</title>
+<link rel="stylesheet" href="{{ url_for('static', filename='css/admin.css') }}">
+</head>
+<body>
+<div class="wrap">
+  <div class="top-bar">
+    <div>
+      <h1>&#9881; {{ t.panel_title }}</h1>
+      <p class="sub" style="margin-bottom:0;">{{ t.panel_sub }}</p>
+    </div>
+    <div style="display:flex; flex-direction:column; align-items:flex-end; gap:10px;">
+      <form class="lang-form" method="post" action="{{ url_for('admin_set_language') }}">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <select name="admin_language" onchange="this.form.submit()">
+          <option value="en" {% if lang == 'en' %}selected{% endif %}>English</option>
+          <option value="ar" {% if lang == 'ar' %}selected{% endif %}>العربية</option>
+        </select>
+      </form>
+      <a class="save" href="{{ url_for('admin_system_page') }}">&#9881; {{ t.system_nav_btn }}</a>
+    </div>
+  </div>
+
+  {% if msg %}<div class="msg ok">{{ msg }}</div>{% endif %}
+  {% if error %}<div class="msg err">{{ error }}</div>{% endif %}
+
+  <!-- Each currency's Remove button lives visually inside the row below,
+       but submits one of these standalone per-currency forms instead of the
+       big save-all form, via the button's form="..." attribute (HTML5). -->
+  {% for c in currencies %}
+  <form id="delete-{{ c.code }}" method="post" action="{{ url_for('admin_delete_currency', code=c.code) }}"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"></form>
+  {% endfor %}
+
+  <form method="post" action="{{ url_for('admin_save_all') }}">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <div class="settings-card">
+      <h2>{{ t.settings_heading }}</h2>
+      <div class="fields">
+        <div>
+          <label class="field-label" for="title">{{ t.field_title }}</label>
+          <input type="text" id="title" name="title" value="{{ settings.title }}" maxlength="{{ max_title_len }}" required>
+        </div>
+        <div>
+          <label class="field-label" for="subtitle">{{ t.field_subtitle }}</label>
+          <input type="text" id="subtitle" name="subtitle" value="{{ settings.subtitle }}" maxlength="{{ max_subtitle_len }}">
+        </div>
+        <label class="chk"><input type="checkbox" name="show_updated_at" {% if settings.show_updated_at %}checked{% endif %}> {{ t.show_updated_label }}</label>
+      </div>
+    </div>
+
+    {% for c in currencies %}
+    <div class="row {% if not c.enabled %}disabled{% endif %}">
+      <div class="thumb">{% if c.flag %}<img src="{{ c.flag }}" alt="{{ c.name }} flag">{% endif %}</div>
+      <div class="code-badge">{{ c.code }}</div>
+      <div class="inline">
+        <input type="text" name="name_{{ c.code }}" value="{{ c.name }}" placeholder="{{ t.name_ph }}" maxlength="{{ max_name_len }}" required>
+        <input type="text" name="symbol_{{ c.code }}" value="{{ c.symbol }}" placeholder="{{ t.symbol_ph }}" maxlength="{{ max_symbol_len }}">
+        <input type="text" inputmode="decimal" name="price_{{ c.code }}" value="{{ c.price }}" oninput="filterDecimalInput(this)" placeholder="{{ t.price_ph }}" required>
+        <label class="chk"><input type="checkbox" name="enabled_{{ c.code }}" {% if c.enabled %}checked{% endif %}> {{ t.enabled_label }}</label>
+      </div>
+      <button type="submit" form="delete-{{ c.code }}" class="delete" onclick="return confirm('{{ t.confirm_remove.format(code=c.code) }}');">{{ t.remove_btn }}</button>
+    </div>
+    {% endfor %}
+
+    <div style="margin-top:20px;"><button type="submit" class="save">{{ t.save_settings }}</button></div>
+  </form>
+
+  <div class="add-card">
+    <h2>{{ t.add_heading }}</h2>
+    <form method="post" action="{{ url_for('admin_add_currency') }}" enctype="multipart/form-data">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <div class="fields">
+        <input type="text" name="code" placeholder="{{ t.code_ph }}" maxlength="{{ max_code_len }}" required>
+        <input type="text" name="name" placeholder="{{ t.name_req_ph }}" maxlength="{{ max_name_len }}" required>
+        <input type="text" name="symbol" placeholder="{{ t.symbol_opt_ph }}" maxlength="{{ max_symbol_len }}">
+        <input type="text" inputmode="decimal" name="price" placeholder="{{ t.price_req_ph }}" oninput="filterDecimalInput(this)" required>
+      </div>
+      <div class="flag-choice">
+        <label><input type="radio" name="flag_source" value="auto" checked> {{ t.flag_auto }}</label>
+        <label><input type="radio" name="flag_source" value="upload"> {{ t.flag_upload }}</label>
+      </div>
+      <input type="file" name="flag_file" accept="image/*">
+      <div style="margin-top:16px;"><button type="submit" class="save">{{ t.add_btn }}</button></div>
+    </form>
+  </div>
+
+  <a class="back" href="/">{{ t.back_link }}</a>
+
+  <div class="about-box">
+    <div><strong>About</strong></div>
+    <div>All rights reserved to STN company (STH)</div>
+    <div>Developed and maintained by Rami ZAYAT</div>
+  </div>
+</div>
+<script src="{{ url_for('static', filename='js/admin.js') }}"></script>
+</body>
+</html>

@@ -1,0 +1,117 @@
+<!doctype html>
+<html lang="{{ lang }}" dir="{{ 'rtl' if lang == 'ar' else 'ltr' }}">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>System &amp; Network &mdash; Currency Dashboard</title>
+<link rel="stylesheet" href="{{ url_for('static', filename='css/admin.css') }}">
+</head>
+<body>
+<div class="wrap">
+  <div class="top-bar">
+    <div>
+      <h1>&#9881; {{ t.system_heading }}</h1>
+      <p class="sub" style="margin-bottom:0;">{{ t.system_sub }}</p>
+    </div>
+    <form class="lang-form" method="post" action="{{ url_for('admin_set_language') }}">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <select name="admin_language" onchange="this.form.submit()">
+        <option value="en" {% if lang == 'en' %}selected{% endif %}>English</option>
+        <option value="ar" {% if lang == 'ar' %}selected{% endif %}>العربية</option>
+      </select>
+    </form>
+  </div>
+
+  {% if msg %}<div class="msg ok">{{ msg }}</div>{% endif %}
+  {% if error %}<div class="msg err">{{ error }}</div>{% endif %}
+
+  <!-- None of these run anything privileged directly — each just writes
+       desired state that a separate root-run daemon polls and applies
+       (see NET_CONFIG_FILE's comment in config.py). Standalone forms (csrf
+       token only, plus auto-update-toggle's checkbox) so their visible
+       fields/buttons can live inside the settings-cards below, associated
+       purely via each input's form="..." attribute, without nesting one
+       form inside another. -->
+  <form id="auto-update-toggle" method="post" action="{{ url_for('admin_toggle_auto_update') }}"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"></form>
+  <form id="check-update-now" method="post" action="{{ url_for('admin_check_update_now') }}"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"></form>
+  <form id="wifi-save" method="post" action="{{ url_for('admin_wifi_save') }}"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"></form>
+  <form id="ap-save" method="post" action="{{ url_for('admin_ap_save') }}"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"></form>
+  <form id="ap-disable" method="post" action="{{ url_for('admin_ap_disable') }}"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"></form>
+  <form id="restart-board" method="post" action="{{ url_for('admin_reboot') }}"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"></form>
+
+  <div class="settings-card">
+    <h2>{{ t.updates_heading }}</h2>
+    <div class="fields">
+      <div style="color:var(--text-dim); font-size:0.9rem;">
+        {{ t.version_label }}: <strong style="color:var(--text-main);">{{ app_version }}</strong>{% if app_commit %} <span style="opacity:0.7;">({{ app_commit }})</span>{% endif %}
+      </div>
+      <label class="chk"><input type="checkbox" name="auto_update_enabled" form="auto-update-toggle" onchange="this.form.submit()" {% if auto_update_enabled %}checked{% endif %}> {{ t.auto_update_label }}</label>
+      <button type="submit" form="check-update-now" class="save">{{ t.check_now_btn }}</button>
+    </div>
+  </div>
+
+  <div class="settings-card">
+    <h2>{{ t.network_heading }}</h2>
+    <div class="fields">
+      <div style="color:var(--text-dim); font-size:0.9rem; width:100%;">
+        {{ t.wifi_status_label }}:
+        {% if net_status.available %}
+          <strong style="color:var(--text-main);">{% if net_status.connected %}{{ t.wifi_connected_fmt.format(ssid=net_status.ssid or '?', ip=net_status.ip or '?') }}{% else %}{{ t.wifi_not_connected }}{% endif %}</strong>
+        {% else %}
+          <span style="opacity:0.7;">{{ t.wifi_unavailable }}</span>
+        {% endif %}
+      </div>
+      {% for slot in wifi_slots %}
+      <div>
+        <label class="field-label">{{ t.wifi_slot_label.format(n=loop.index) }}</label>
+        <input type="text" name="wifi_ssid_{{ loop.index }}" form="wifi-save" value="{{ slot.ssid or '' }}" placeholder="{{ t.wifi_ssid_ph }}" maxlength="{{ max_ssid_len }}">
+        <input type="password" name="wifi_password_{{ loop.index }}" form="wifi-save" placeholder="{{ t.wifi_password_ph }}" autocomplete="off" minlength="{{ min_wifi_pass_len }}" maxlength="{{ max_wifi_pass_len }}">
+      </div>
+      {% endfor %}
+      {% if wifi_prefilled %}<div style="color:var(--text-dim); font-size:0.85rem; width:100%;">{{ t.wifi_prefilled_note }}</div>{% endif %}
+      <div style="color:var(--text-dim); font-size:0.85rem; width:100%;">{{ t.wifi_password_note }}</div>
+      <button type="submit" form="wifi-save" class="save">{{ t.wifi_save_btn }}</button>
+    </div>
+  </div>
+
+  <div class="settings-card">
+    <h2>{{ t.hotspot_heading }}</h2>
+    <div class="fields">
+      <div style="color:var(--text-dim); font-size:0.9rem; width:100%;">
+        {% if not net_status.available %}
+          <span style="opacity:0.7;">{{ t.wifi_unavailable }}</span>
+        {% elif net_status.ap_active %}
+          <strong style="color:var(--text-main);">{{ t.hotspot_active }}</strong>
+        {% elif net_status.ap_installed %}
+          {{ t.hotspot_installed_inactive }}
+        {% else %}
+          {{ t.hotspot_not_installed }}
+        {% endif %}
+      </div>
+      <input type="text" name="ap_ssid" form="ap-save" value="{{ ap_fallback.ssid or '' }}" placeholder="{{ t.hotspot_ssid_ph }}" maxlength="{{ max_ssid_len }}">
+      <input type="password" name="ap_password" form="ap-save" placeholder="{{ t.hotspot_password_ph }}" autocomplete="off" minlength="{{ min_wifi_pass_len }}" maxlength="{{ max_wifi_pass_len }}">
+      <button type="submit" form="ap-save" class="save">{{ t.hotspot_save_btn }}</button>
+      {% if ap_fallback.enabled %}
+      <button type="submit" form="ap-disable" class="delete" onclick="return confirm('{{ t.hotspot_disable_confirm }}');">{{ t.hotspot_disable_btn }}</button>
+      {% endif %}
+    </div>
+  </div>
+
+  <div class="settings-card">
+    <h2>{{ t.restart_heading }}</h2>
+    <div class="fields">
+      <button type="submit" form="restart-board" class="delete" onclick="return confirm('{{ t.restart_confirm }}');" {% if not net_status.available %}disabled{% endif %}>{{ t.restart_btn }}</button>
+      {% if not net_status.available %}<span style="color:var(--text-dim); font-size:0.85rem;">{{ t.wifi_unavailable }}</span>{% endif %}
+    </div>
+  </div>
+
+  <a class="back" href="{{ url_for('admin_page') }}">{{ t.back_to_admin }}</a>
+
+  <div class="about-box">
+    <div><strong>About</strong></div>
+    <div>All rights reserved to STN company (STH)</div>
+    <div>Developed and maintained by Rami ZAYAT</div>
+  </div>
+</div>
+</body>
+</html>
