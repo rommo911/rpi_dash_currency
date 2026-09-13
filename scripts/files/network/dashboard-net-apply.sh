@@ -5,7 +5,8 @@
 # privilege to change Wi-Fi/reboot as a result of admin-panel input. The
 # Flask app itself never runs anything as root and never holds a sudo
 # grant for this feature — it only ever writes plain files into its own
-# workspace ({{INSTALL_DIR}}/net_config.json, {{INSTALL_DIR}}/reboot.request)
+# workspace (/home/kiosk/currency-dashboard/net_config.json,
+# /home/kiosk/currency-dashboard/reboot.request)
 # describing DESIRED state; this daemon polls those files and reconciles
 # real system state to match, then publishes OBSERVED state (never
 # secrets) to /run/dashboard-net/status.json for the app to read back.
@@ -38,8 +39,8 @@
 # kill the daemon — same reasoning as wifi-ap-fallback-watchdog.sh.
 set -u
 
-INSTALL_DIR="{{INSTALL_DIR}}"
-RUN_USER="{{RUN_USER}}"
+INSTALL_DIR="/home/kiosk/currency-dashboard"
+RUN_USER="kiosk"
 
 NET_CONFIG_FILE="$INSTALL_DIR/net_config.json"
 REBOOT_FLAG="$INSTALL_DIR/reboot.request"
@@ -282,7 +283,7 @@ reconcile_wifi_nmcli() {
 
 # reconcile_wifi_netplan — writes ONE dedicated file
 # ($NETPLAN_FILE) this daemon fully owns (always render-and-overwrite,
-# same "no partial patch" idiom as lib.sh's render_template — nothing to
+# same "no partial patch" idiom as lib.sh's install_file — nothing to
 # check-before-writing). Up to 2 access-points, no per-AP priority key in
 # netplan's schema, so ranking a preferred network isn't possible here
 # the way nmcli's autoconnect-priority does it — wpa_supplicant itself

@@ -6,7 +6,7 @@
 # once, right after provision-pi.sh clones the repo and hands off here.
 #
 # Every installed config file below is a real file under scripts/files/,
-# rendered via lib.sh's render_template/ensure_block_in_file — nothing
+# rendered via lib.sh's install_file/ensure_block_in_file — nothing
 # here authors config content inline. See scripts/lib.sh for why.
 #
 # Usage:
@@ -138,20 +138,20 @@ log_info "8/11 Hardening SSH (root login disabled; password auth kept ON as requ
 # Debian's default sshd_config already Includes that directory near the
 # top, so these directives win the same way in-place edits used to,
 # without ever touching a line we don't own.
-render_template "$FILES_DIR/ssh/currency-dashboard-hardening.conf" \
+install_file "$FILES_DIR/ssh/currency-dashboard-hardening.conf" \
   /etc/ssh/sshd_config.d/currency-dashboard-hardening.conf
 sudo systemctl restart ssh 2>/dev/null || sudo systemctl restart sshd
 
 # ---------------------------------------------------------------------------
 log_info "9/11 fail2ban for SSH"
-render_template "$FILES_DIR/fail2ban/sshd-jail.local" /etc/fail2ban/jail.local
+install_file "$FILES_DIR/fail2ban/sshd-jail.local" /etc/fail2ban/jail.local
 sudo systemctl enable --now fail2ban
 sudo systemctl restart fail2ban
 
 # ---------------------------------------------------------------------------
 log_info "10/11 Automatic security updates + system-wide log limits (errors only, 1 week max)"
-render_template "$FILES_DIR/apt/51unattended-upgrades-security" /etc/apt/apt.conf.d/51unattended-upgrades-security
-render_template "$FILES_DIR/apt/20auto-upgrades" /etc/apt/apt.conf.d/20auto-upgrades
+install_file "$FILES_DIR/apt/51unattended-upgrades-security" /etc/apt/apt.conf.d/51unattended-upgrades-security
+install_file "$FILES_DIR/apt/20auto-upgrades" /etc/apt/apt.conf.d/20auto-upgrades
 sudo systemctl enable --now unattended-upgrades
 
 # journald's own MaxLevelStore is what "errors only" actually means at the
@@ -162,7 +162,7 @@ sudo systemctl enable --now unattended-upgrades
 # security-relevant log line is deliberately emitted at ERROR (see
 # app.py) specifically so it still gets *stored* under this
 # policy and the admin-login fail2ban jail keeps working.
-render_template "$FILES_DIR/journald/10-currency-dashboard-limits.conf" \
+install_file "$FILES_DIR/journald/10-currency-dashboard-limits.conf" \
   /etc/systemd/journald.conf.d/10-currency-dashboard-limits.conf
 sudo systemctl restart systemd-journald
 

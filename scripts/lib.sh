@@ -9,9 +9,15 @@
 # as a real file under scripts/files/, not as heredoc text buried inside a
 # script. `install_file`/`install_user_file`/`ensure_block_in_file`/`ensure_tokens_in_cmdline`
 # are the ONLY mechanisms any script uses to get that content onto disk.
-# `install_file` copies a repo file verbatim to the target path; the
-# other functions manage partial inserts into OS files. If you need a
-# new installed file, add it under `scripts/files/` and call one of these.
+# Every file under scripts/files/ is byte-for-byte final content — no
+# {{TOKEN}} placeholders, no KEY=VALUE substitution anywhere in this repo.
+# `install_file`/`install_user_file` copy a repo file verbatim to the
+# target path; the other functions manage partial inserts into OS files
+# we don't fully own. If a value varies per-deploy, hardcode the deploy
+# default straight into the file under scripts/files/ instead of adding
+# a substitution mechanism back — see NOTES for why that broke before.
+# If you need a new installed file, add it under `scripts/files/` and
+# call one of these.
 
 # Basic console helpers retained for interactive runs; below we wire them
 # into the system-level logging helpers that also emit to journald via
@@ -158,24 +164,19 @@ install_user_file() {
   sudo install -o kiosk -g kiosk -m 644 "$template" "$dest"
 }
 
-# Backwards-compatibility shims for older scripts that still call the
-# old function names. New code should call `install_file`/`install_user_file`.
-render_template() { install_file "$@"; }
-render_template_user() { install_user_file "$@"; }
-
-# ensure_block_in_file [--sudo] <file> <marker> <template> [KEY=VALUE ...]
+# ensure_block_in_file [--sudo] <file> <marker> <template>
 # Manages a single delimited region inside a file we don't fully own:
 #   # BEGIN <marker>
-#   ...rendered template content...
+#   ...template content, verbatim...
 #   # END <marker>
 # Any existing region with that marker is removed first (wherever it is
-# in the file), then the freshly rendered one is appended — so re-running
-# always converges on exactly the current template content, never leaves
-# a stale duplicate, and never has to pattern-match the PREVIOUS content
-# to know what to replace (that pattern-matching is exactly what caused
-# the startx self-heal bug this replaces ). Backs the file
-# up (once, timestamped) only if it's actually about to change. Creates
-# the file (and its parent dir) if it doesn't exist yet.
+# in the file), then the current template content is appended — so
+# re-running always converges on exactly the current template content,
+# never leaves a stale duplicate, and never has to pattern-match the
+# PREVIOUS content to know what to replace (that pattern-matching is
+# exactly what caused the startx self-heal bug this replaces ). Backs
+# the file up (once, timestamped) only if it's actually about to change.
+# Creates the file (and its parent dir) if it doesn't exist yet.
 # Pass --sudo for a root-owned file (e.g. /boot/firmware/config.txt) —
 # reads still happen as the invoking user (these files are world-readable),
 # only the backup and the final write go through sudo.
@@ -186,18 +187,11 @@ ensure_block_in_file() {
     shift
   fi
   local file="$1" marker="$2" template="$3"
-  shift 3
   local begin="# BEGIN $marker" end="# END $marker"
 
   local rendered=""
   if [[ -f "$template" ]]; then
     rendered="$(cat "$template")"
-    local kv key val
-    for kv in "$@"; do
-      key="${kv%%=*}"
-      val="${kv#*=}"
-      rendered="${rendered//\{\{$key\}\}/$val}"
-    done
   elif [[ "$template" != "--remove--" ]]; then
     warn "Template not found: $template — skipping block '$marker' in $file"
     return 1

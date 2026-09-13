@@ -7,7 +7,7 @@
 #
 # Every installed config file below (systemd units, fail2ban, sudoers,
 # kiosk autostart, boot config) is a real file under scripts/files/,
-# rendered via lib.sh's render_template/ensure_block_in_file — nothing
+# rendered via lib.sh's install_file/ensure_block_in_file — nothing
 # here authors config content inline or edits an OS file with sed. See
 # scripts/lib.sh for why.
 #
@@ -47,7 +47,7 @@ if [[ -f "$SCRIPT_DIR/lib.sh" ]]; then
 else
   # Running copied-alone, before the repo (and lib.sh/scripts/files with
   # it) exists on disk yet — bare log/warn/is_auto cover everything used
-  # before the clone step below; render_template & friends are only
+  # before the clone step below; install_file & friends are only
   # called after it, by which point lib.sh is re-sourced from the fresh
   # checkout (see FILES_DIR re-point below).
   log()  { echo -e "\n\033[1;36m==> $*\033[0m"; }
@@ -120,7 +120,7 @@ fi
 # case this script started from a different location than $INSTALL_DIR
 # (e.g. run copied-alone, before it had cloned anything) — the fallback
 # log/warn/is_auto above cover everything up to this point, but
-# render_template & friends (used from here on) need the real lib.sh.
+# install_file & friends (used from here on) need the real lib.sh.
 FILES_DIR="$INSTALL_DIR/scripts/files"
 # shellcheck disable=SC1091
 source "$INSTALL_DIR/scripts/lib.sh"
@@ -154,7 +154,7 @@ fi
 
 # Install system journald limits to reduce SD wear (warning level, 3 days)
 log_info "Applying system journald limits (3 days, warning level)"
-render_template "$FILES_DIR/journald/10-currency-dashboard-limits.conf" \
+install_file "$FILES_DIR/journald/10-currency-dashboard-limits.conf" \
   /etc/systemd/journald.conf.d/10-currency-dashboard-limits.conf
 sudo systemctl restart systemd-journald || warn "Failed to restart systemd-journald"
 if [[ ! -f "$INSTALL_DIR/scripts/auto-update.conf" ]]; then
@@ -241,9 +241,8 @@ INSTALL_DIR="$INSTALL_DIR" bash "$INSTALL_DIR/scripts/generate-cert.sh" || \
   warn "Certificate generation failed — the admin panel will fall back to HTTP only until this is fixed."
 
 log_info "6/13 Installing systemd service"
-render_template "$FILES_DIR/systemd/currency-dashboard.service" \
-  "/etc/systemd/system/${SERVICE_NAME}.service" \
-  "INSTALL_DIR=$INSTALL_DIR" "APP_PORT=$APP_PORT" "HTTPS_PORT=$HTTPS_PORT" "RUN_USER=$USER"
+install_file "$FILES_DIR/systemd/currency-dashboard.service" \
+  "/etc/systemd/system/${SERVICE_NAME}.service"
 
 sudo systemctl daemon-reload
 sudo systemctl enable --now "${SERVICE_NAME}"
@@ -307,8 +306,7 @@ SUDOERS_FILE="/etc/sudoers.d/${SERVICE_NAME}-updater"
 # plain `sudo tee` would leave it world-readable, which sudoers must
 # never be.
 SUDOERS_TMP="$(mktemp)"
-render_template_user "$FILES_DIR/sudoers/currency-dashboard-updater" "$SUDOERS_TMP" \
-  "RUN_USER=$USER" "SYSTEMCTL_BIN=$SYSTEMCTL_BIN" "SERVICE_NAME=$SERVICE_NAME"
+install_user_file "$FILES_DIR/sudoers/currency-dashboard-updater" "$SUDOERS_TMP"
 if sudo visudo -cf "$SUDOERS_TMP" >/dev/null 2>&1; then
   sudo install -m 440 -o root -g root "$SUDOERS_TMP" "$SUDOERS_FILE"
 else
@@ -317,10 +315,9 @@ else
 fi
 rm -f "$SUDOERS_TMP"
 
-render_template "$FILES_DIR/systemd/currency-dashboard-updater.service" \
-  "/etc/systemd/system/${SERVICE_NAME}-updater.service" \
-  "INSTALL_DIR=$INSTALL_DIR" "SERVICE_NAME=$SERVICE_NAME" "RUN_USER=$USER"
-render_template "$FILES_DIR/systemd/currency-dashboard-updater.timer" \
+install_file "$FILES_DIR/systemd/currency-dashboard-updater.service" \
+  "/etc/systemd/system/${SERVICE_NAME}-updater.service"
+install_file "$FILES_DIR/systemd/currency-dashboard-updater.timer" \
   "/etc/systemd/system/${SERVICE_NAME}-updater.timer"
 
 sudo systemctl daemon-reload
@@ -331,11 +328,10 @@ install_file "$FILES_DIR/logrotate/currency-dashboard" "/etc/logrotate.d/currenc
 
 log_info "9/13 Securing the admin panel: fail2ban jail for repeated failed logins"
 if command -v fail2ban-client >/dev/null 2>&1; then
-  render_template "$FILES_DIR/fail2ban/currency-dashboard.filter" \
+  install_file "$FILES_DIR/fail2ban/currency-dashboard.filter" \
     "/etc/fail2ban/filter.d/${SERVICE_NAME}.conf"
-  render_template "$FILES_DIR/fail2ban/currency-dashboard.jail" \
-    "/etc/fail2ban/jail.d/${SERVICE_NAME}.local" \
-    "SERVICE_NAME=$SERVICE_NAME" "APP_PORT=$APP_PORT" "HTTPS_PORT=$HTTPS_PORT"
+  install_file "$FILES_DIR/fail2ban/currency-dashboard.jail" \
+    "/etc/fail2ban/jail.d/${SERVICE_NAME}.local"
   sudo systemctl restart fail2ban
 else
   log_warn "fail2ban not installed (run provision-pi.sh/harden-system.sh first for full hardening) — skipping the admin-login jail"
@@ -350,12 +346,10 @@ log_info "10/13 Installing the network/reboot reconciler (Wi-Fi + hotspot fallba
 # scripts/files/network/dashboard-net-apply.sh's header comment for the
 # full design.
 DAEMON_PATH="/usr/local/sbin/dashboard-net-apply"
-render_template "$FILES_DIR/network/dashboard-net-apply.sh" "$DAEMON_PATH" \
-  "INSTALL_DIR=$INSTALL_DIR" "RUN_USER=$USER"
+install_file "$FILES_DIR/network/dashboard-net-apply.sh" "$DAEMON_PATH"
 sudo chmod 755 "$DAEMON_PATH"
-render_template "$FILES_DIR/systemd/dashboard-net-apply.service" \
-  "/etc/systemd/system/dashboard-net-apply.service" \
-  "DAEMON_PATH=$DAEMON_PATH"
+install_file "$FILES_DIR/systemd/dashboard-net-apply.service" \
+  "/etc/systemd/system/dashboard-net-apply.service"
 sudo systemctl daemon-reload
 # Upgrade path: the emergency AP's networkd drop-in used to be named
 # 90-dashboard-ap.network, which always lost to netplan's generated
@@ -407,13 +401,11 @@ log_info "11/13 Installing the post-boot health check (auto-rollback on a bad bo
 # checkout (e.g. from a power loss mid-write) leaving a Pi stuck unbootable
 # with no display attached to debug it from.
 HEALTH_SCRIPT_PATH="/usr/local/sbin/dashboard-health-check"
-render_template "$FILES_DIR/health/dashboard-health-check.sh" "$HEALTH_SCRIPT_PATH" \
-  "INSTALL_DIR=$INSTALL_DIR" "RUN_USER=$USER" "SERVICE_NAME=$SERVICE_NAME" "APP_PORT=$APP_PORT"
+install_file "$FILES_DIR/health/dashboard-health-check.sh" "$HEALTH_SCRIPT_PATH"
 sudo chmod 755 "$HEALTH_SCRIPT_PATH"
-render_template "$FILES_DIR/systemd/dashboard-health-check.service" \
-  "/etc/systemd/system/dashboard-health-check.service" \
-  "SCRIPT_PATH=$HEALTH_SCRIPT_PATH" "SERVICE_NAME=$SERVICE_NAME"
-render_template "$FILES_DIR/systemd/dashboard-health-check.timer" \
+install_file "$FILES_DIR/systemd/dashboard-health-check.service" \
+  "/etc/systemd/system/dashboard-health-check.service"
+install_file "$FILES_DIR/systemd/dashboard-health-check.timer" \
   "/etc/systemd/system/dashboard-health-check.timer"
 sudo systemctl daemon-reload
 sudo systemctl enable --now dashboard-health-check.timer
@@ -524,7 +516,7 @@ reduce_network_wait_online_delay() {
   local unit
   for unit in systemd-networkd-wait-online.service NetworkManager-wait-online.service; do
     if systemctl list-unit-files "$unit" 2>/dev/null | grep -q "$unit"; then
-      render_template "$FILES_DIR/systemd/wait-online-fast-timeout.conf" \
+      install_file "$FILES_DIR/systemd/wait-online-fast-timeout.conf" \
         "/etc/systemd/system/${unit}.d/currency-dashboard-fast-timeout.conf"
       log_info "Capped $unit's start timeout at 5s (was blocking boot far longer than the dashboard needs)"
     fi
@@ -541,28 +533,35 @@ else
 
 log_info "12/13 Configuring kiosk autostart"
 configure_boot_files
-# Wrapped in `sh -c '...; exec chromium ...'` rather than the bare
-# chromium invocation: Chromium leaves SingletonLock/SingletonSocket/
-# SingletonCookie symlinks in its profile dir (~/.config/chromium) while
-# running, and only cleans them up on a graceful exit. A reboot, power
-# loss, or `disable-kiosk.sh` killing the process all skip that cleanup,
-# so the NEXT launch finds a stale lock pointing at a PID that no longer
-# exists and refuses to start — Chromium pops an "Unlock Profile and
-# Relaunch" dialog instead of the dashboard, and kiosk mode is stuck
-# until someone manually deletes those files. This was hit live on a
-# real deploy. Since this kiosk only ever runs one Chromium instance per
-# X session (fresh tty1 login -> single exec chain), any lock file found
-# at launch time is by definition stale, not a real concurrent instance
-# — safe to unconditionally clear before every launch. `exec` inside the
-# wrapper keeps chromium as the final foreground process either way (see
-# the .xinitrc note above about never backgrounding the last command).
-KIOSK_CMD="sh -c 'rm -f \"\$HOME/.config/chromium/SingletonLock\" \"\$HOME/.config/chromium/SingletonSocket\" \"\$HOME/.config/chromium/SingletonCookie\" 2>/dev/null; exec $CHROMIUM_BIN --kiosk --incognito --noerrant --disable-infobars --disable-session-crashed-bubble --check-for-update-interval=31536000 http://localhost:${APP_PORT}'"
+# The launch command installed into each of the 4 kiosk autostart files
+# below (scripts/files/kiosk/{labwc,lxde}-autostart,
+# wayfire-autostart.snippet, xinitrc) is `sh -c '...; exec chromium ...'`
+# rather than a bare chromium invocation: Chromium leaves
+# SingletonLock/SingletonSocket/SingletonCookie symlinks in its profile
+# dir (~/.config/chromium) while running, and only cleans them up on a
+# graceful exit. A reboot, power loss, or `disable-kiosk.sh` killing the
+# process all skip that cleanup, so the NEXT launch finds a stale lock
+# pointing at a PID that no longer exists and refuses to start —
+# Chromium pops an "Unlock Profile and Relaunch" dialog instead of the
+# dashboard, and kiosk mode is stuck until someone manually deletes
+# those files. This was hit live on a real deploy. Since this kiosk only
+# ever runs one Chromium instance per X session (fresh tty1 login ->
+# single exec chain), any lock file found at launch time is by
+# definition stale, not a real concurrent instance — safe to
+# unconditionally clear before every launch. `exec` inside the wrapper
+# keeps chromium as the final foreground process either way (see the
+# .xinitrc note above about never backgrounding the last command).
+# The binary itself is resolved at runtime with
+# `$(command -v chromium-browser || command -v chromium)` inside that
+# static command — Raspberry Pi OS ships `chromium-browser`, Armbian/
+# Debian ships plain `chromium`, and the same installed file must work
+# unmodified on either.
 
 setup_labwc() {
   # labwc doesn't blank/DPMS the screen by default on Pi OS Bookworm, so no
   # xset-equivalent is needed here — configure_boot_files already covers
   # the console/firmware-level blanking that would otherwise apply.
-  render_template_user "$FILES_DIR/kiosk/labwc-autostart" "$HOME/.config/labwc/autostart" "KIOSK_CMD=$KIOSK_CMD"
+  install_user_file "$FILES_DIR/kiosk/labwc-autostart" "$HOME/.config/labwc/autostart"
   if is_raspi_os && command -v raspi-config >/dev/null 2>&1; then
     sudo raspi-config nonint do_boot_behaviour B4 || true
   fi
@@ -571,7 +570,7 @@ setup_labwc() {
 
 setup_wayfire() {
   ensure_block_in_file "$HOME/.config/wayfire.ini" "currency-dashboard-kiosk" \
-    "$FILES_DIR/kiosk/wayfire-autostart.snippet" "KIOSK_CMD=$KIOSK_CMD"
+    "$FILES_DIR/kiosk/wayfire-autostart.snippet"
   if is_raspi_os && command -v raspi-config >/dev/null 2>&1; then
     sudo raspi-config nonint do_boot_behaviour B4 || true
   fi
@@ -579,7 +578,7 @@ setup_wayfire() {
 }
 
 setup_lxde() {
-  render_template_user "$FILES_DIR/kiosk/lxde-autostart" "$HOME/.config/lxsession/LXDE-pi/autostart" "KIOSK_CMD=$KIOSK_CMD"
+  install_user_file "$FILES_DIR/kiosk/lxde-autostart" "$HOME/.config/lxsession/LXDE-pi/autostart"
   if is_raspi_os && command -v raspi-config >/dev/null 2>&1; then
     sudo raspi-config nonint do_boot_behaviour B4 || true
   fi
@@ -587,14 +586,14 @@ setup_lxde() {
 }
 
 setup_console_x() {
-  # $KIOSK_CMD must be the FOREGROUND last command in .xinitrc (via exec,
-  # no trailing &) — xinit/startx tears the X session down the instant
-  # .xinitrc reaches EOF with nothing left to wait on. Backgrounding it
-  # made X start, launch Chromium, and immediately exit again a few
-  # seconds later ("Server terminated successfully (0)" in Xorg.0.log)
-  # every single time — this was a real bug, caught live on a deployed
-  # Pi. See scripts/files/kiosk/xinitrc — the template already ends with
-  # `exec {{KIOSK_CMD}}`, keep it that way if you touch it.
+  # The Chromium launch command must be the FOREGROUND last command in
+  # .xinitrc (via exec, no trailing &) — xinit/startx tears the X session
+  # down the instant .xinitrc reaches EOF with nothing left to wait on.
+  # Backgrounding it made X start, launch Chromium, and immediately exit
+  # again a few seconds later ("Server terminated successfully (0)" in
+  # Xorg.0.log) every single time — this was a real bug, caught live on a
+  # deployed Pi. See scripts/files/kiosk/xinitrc — it already ends with
+  # `exec sh -c '...'`, keep it that way if you touch it.
   #
   # matchbox-window-manager is required here, not optional: bare xinit
   # starts NO window manager at all, and without one nobody honors
@@ -624,8 +623,8 @@ setup_console_x() {
   # running fine underneath — and reproduced by finding `xset` genuinely
   # missing from that board's installed packages.
   sudo apt install -y xserver-xorg xinit matchbox-window-manager x11-xserver-utils
-  render_template_user "$FILES_DIR/kiosk/xinitrc" "$HOME/.xinitrc" "APP_PORT=$APP_PORT" "KIOSK_CMD=$KIOSK_CMD"
-  # render_template_user only writes content, never touches permissions —
+  install_user_file "$FILES_DIR/kiosk/xinitrc" "$HOME/.xinitrc"
+  # install_user_file only writes content, never touches permissions —
   # relying on an inherited/pre-existing executable bit (e.g. from an
   # /etc/skel default) to make `startx`/`xinit` treat this as a direct
   # client program is fragile and was confirmed to actually fail this
@@ -653,9 +652,8 @@ setup_console_x() {
   # distro-agnostic — it's literally the same mechanism raspi-config's own
   # boot-behaviour option installs under the hood on Raspberry Pi OS — so
   # it's applied unconditionally here instead of only for is_raspi_os.
-  render_template "$FILES_DIR/systemd/getty-autologin.conf" \
-    "/etc/systemd/system/getty@tty1.service.d/autologin.conf" \
-    "RUN_USER=$USER"
+  install_file "$FILES_DIR/systemd/getty-autologin.conf" \
+    "/etc/systemd/system/getty@tty1.service.d/autologin.conf"
   sudo systemctl daemon-reload
   log_info "Configured tty1 autologin as $USER (takes effect on next boot, or: sudo systemctl restart getty@tty1)"
 

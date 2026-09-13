@@ -33,10 +33,14 @@ redeploys and the auto-updater use it.
 ## Rules that bite
 
 **Installed files.** Everything installed to the system is a real file under
-`scripts/files/`, put in place via `lib.sh` (`render_template`,
-`ensure_block_in_file`, `ensure_tokens_in_cmdline`). No heredoc into `/etc`, no
-`sed -i` on an installed file — two separate bugs came from hand-rolled `sed`
-idempotency checks (NOTES).
+`scripts/files/`, put in place via `lib.sh` (`install_file`, `install_user_file`,
+`ensure_block_in_file`, `ensure_tokens_in_cmdline`). Every file under
+`scripts/files/` is byte-for-byte final content — no `{{TOKEN}}` placeholders,
+no KEY=VALUE substitution; a value that varies per-deploy (paths, ports, the
+run user) gets hardcoded straight into the file rather than templated in, and
+`install_file`/`install_user_file` just copy verbatim. No heredoc into `/etc`,
+no `sed -i` on an installed file — two separate bugs came from hand-rolled
+`sed` idempotency checks (NOTES).
 
 **Git.** Never re-track `data.json` / `config.py` / `net_config.json`, and
 never reach for `skip-worktree`. Every update path runs `git rm --cached` on
@@ -76,10 +80,15 @@ client-side `maxlength`/`min`/`max` only mirror it for feedback.
 **Dashboard JS.** Cards are built with `innerHTML`, so everything interpolated
 goes through `esc()`, and flag `src=` additionally through `safeFlagSrc()`.
 
-**Kiosk.** `.xinitrc` must *end* with `exec {{KIOSK_CMD}}` — no trailing `&`, or
-X tears down instantly. The console+X path needs `matchbox-window-manager` for
-`--kiosk` to fill the screen, and `startx -- -nocursor` to hide the pointer
-(NOTES). `HEADLESS` defaults to `false`; never reintroduce hardware-guessing.
+**Kiosk.** `.xinitrc` must *end* with `exec sh -c '...'` — no trailing `&`, or
+X tears down instantly. The launch command hardcoded into that `sh -c` (and
+into the labwc/lxde/wayfire autostart files) resolves the browser binary at
+runtime with `$(command -v chromium-browser || command -v chromium)` since
+Raspberry Pi OS ships `chromium-browser` and Armbian/Debian ships plain
+`chromium` — don't hardcode just one name. The console+X path needs
+`matchbox-window-manager` for `--kiosk` to fill the screen, and
+`startx -- -nocursor` to hide the pointer (NOTES). `HEADLESS` defaults to
+`false`; never reintroduce hardware-guessing.
 
 **systemd.** `systemctl enable --now` does *not* restart an already-running
 unit — redeploys must `restart` explicitly.

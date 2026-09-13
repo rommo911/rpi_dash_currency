@@ -154,17 +154,17 @@ EOF
 sudo chmod 600 "$CONFIG_FILE"
 # This one config file is genuinely install-time-computed data (which
 # device/connection this Pi chose), not static template content, so it's
-# the one exception to going through render_template — matches
+# the one exception to going through install_file — matches
 # generate-cert.sh's cert.meta for the same reason.
 
 # ---------------------------------------------------------------------------
 log_info "Installing the watchdog"
-render_template "$FILES_DIR/network/wifi-ap-fallback-watchdog.sh" "$WATCHDOG"
+install_file "$FILES_DIR/network/wifi-ap-fallback-watchdog.sh" "$WATCHDOG"
 sudo chmod 755 "$WATCHDOG"
 
 # ---------------------------------------------------------------------------
 log_info "Installing the systemd service"
-render_template "$FILES_DIR/systemd/wifi-ap-fallback.service" "$SERVICE_FILE" "WATCHDOG_PATH=$WATCHDOG"
+install_file "$FILES_DIR/systemd/wifi-ap-fallback.service" "$SERVICE_FILE"
 
 sudo systemctl daemon-reload
 sudo systemctl enable wifi-ap-fallback
