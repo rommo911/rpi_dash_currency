@@ -1,13 +1,6 @@
 const MAX_DISPLAYED_CURRENCIES = 5;
 const PAGE_LOAD_VERSION = window.PAGE_LOAD_VERSION;
 
-// Single kill switch for every visual effect (card border scan, frosted
-// glass, price glow pulse, update flash — see dashboard.css's `fx-on`
-// rules). Flip to false on weak boards (Pi Zero) where the continuous
-// CSS animations cost real CPU/GPU. Nothing else needs to change.
-const EFFECTS_ENABLED = true;
-document.body.classList.toggle('fx-on', EFFECTS_ENABLED);
-
 let lastUpdatedAt = null;
 let lastCount = 0;
 let lastHostInfo = { hostname: '', ip: '' };
@@ -163,6 +156,13 @@ async function refresh() {
     if (d.color_palette) {
       document.documentElement.dataset.palette = d.color_palette;
     }
+    // Per-effect toggles (admin panel's "Visual effects" checkboxes) — kept
+    // in sync live, same as color_palette, so a change shows up on the
+    // kiosk within one poll instead of needing a reload.
+    document.body.classList.toggle('fx-glass', !!d.fx_glass);
+    document.body.classList.toggle('fx-scan', !!d.fx_scan);
+    document.body.classList.toggle('fx-flash', !!d.fx_flash);
+    document.body.classList.toggle('fx-glow', !!d.fx_glow);
 
     document.getElementById('dash-title').textContent = d.title || '';
     document.getElementById('dash-subtitle').textContent = d.subtitle || '';
@@ -183,7 +183,7 @@ async function refresh() {
         // lastPrices[c.code] === undefined means "first time we've seen
         // this currency" (page just loaded, or it was just enabled) —
         // never flash that, only an actual change from a known value.
-        const changed = EFFECTS_ENABLED && lastPrices[c.code] !== undefined && lastPrices[c.code] !== c.price;
+        const changed = d.fx_flash && lastPrices[c.code] !== undefined && lastPrices[c.code] !== c.price;
         card.className = changed ? 'card flash' : 'card';
         card.innerHTML = `
           <div class="icon-badge">${c.flag ? `<img src="${safeFlagSrc(c.flag)}" alt="${esc(c.name)} flag">` : ''}</div>

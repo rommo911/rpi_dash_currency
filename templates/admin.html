@@ -58,6 +58,14 @@
         </div>
         <label class="chk"><input type="checkbox" name="show_updated_at" {% if settings.show_updated_at %}checked{% endif %}> {{ t.show_updated_label }}</label>
       </div>
+      <h3>{{ t.effects_heading }}</h3>
+      <p class="sub">{{ t.effects_sub }}</p>
+      <div class="fields">
+        <label class="chk"><input type="checkbox" name="fx_glass" {% if settings.fx_glass %}checked{% endif %}> {{ t.fx_glass_label }}</label>
+        <label class="chk"><input type="checkbox" name="fx_scan" {% if settings.fx_scan %}checked{% endif %}> {{ t.fx_scan_label }}</label>
+        <label class="chk"><input type="checkbox" name="fx_flash" {% if settings.fx_flash %}checked{% endif %}> {{ t.fx_flash_label }}</label>
+        <label class="chk"><input type="checkbox" name="fx_glow" {% if settings.fx_glow %}checked{% endif %}> {{ t.fx_glow_label }}</label>
+      </div>
     </div>
 
     {% for c in currencies %}

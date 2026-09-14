@@ -53,11 +53,14 @@
   --dashboard-font: "Noto Sans Arabic";
 
   /* Timing knobs for the effects below — tune here, no need to touch the
-     animations themselves. Effects are fully on/off via the single
-     EFFECTS_ENABLED flag at the top of dashboard.js (body.fx-on), for
-     weak boards (Pi Zero) where continuous CSS animations cost real CPU.
-     scan/glow are full cycle length: each fires once per cycle then sits
-     invisible for the rest of it (see their keyframes' opacity timing). */
+     animations themselves. Each effect is independently on/off via its
+     own body.fx-glass / .fx-scan / .fx-flash / .fx-glow class, driven by
+     the admin panel's "Visual effects" checkboxes (see dashboard.js) —
+     for weak boards (Orange Pi Zero 3, Pi Zero) where continuous CSS
+     animations cost real CPU/GPU, and backdrop-filter blur (fx-glass)
+     especially so. scan/glow are full cycle length: each fires once per
+     cycle then sits invisible for the rest of it (see their keyframes'
+     opacity timing). */
   --scan-duration: 10s;
   --glow-duration: 15s;
   --flash-duration: 2s;
@@ -153,9 +156,10 @@ body {
   min-height: 0;
 }
 /* Frosted glass: lets the background gradient show through softly
-   instead of a flat translucent fill. Gated behind fx-on since
-   backdrop-filter is one of the pricier effects to keep live. */
-body.fx-on .card {
+   instead of a flat translucent fill. Gated behind fx-glass since
+   backdrop-filter is the single priciest effect here to keep live —
+   the first one to turn off on a board showing high CPU/GPU usage. */
+body.fx-glass .card {
   backdrop-filter: blur(10px);
   -webkit-backdrop-filter: blur(10px);
 }
@@ -180,7 +184,7 @@ body.fx-on .card {
   filter: blur(4px);
   opacity: 0;
 }
-body.fx-on .card::before {
+body.fx-scan .card::before {
   animation: cardScan var(--scan-duration) linear infinite;
 }
 @keyframes cardScan {
@@ -195,7 +199,7 @@ body.fx-on .card::before {
    back off, since the whole card node is rebuilt each poll anyway. This
    one is meant to be the most noticeable of the three effects — a quick
    bright pop (glow + slight scale) that then fades over 2s. */
-body.fx-on .card.flash {
+body.fx-flash .card.flash {
   animation: cardFlash var(--flash-duration) ease-out;
 }
 @keyframes cardFlash {
@@ -249,7 +253,7 @@ body.fx-on .card.flash {
 /* Faint glow on the price — fires once per cycle (fades in, fades out)
    rather than breathing continuously, and capped low (~20% of the
    original intensity) so it stays in the background, not the focus. */
-body.fx-on .card .value {
+body.fx-glow .card .value {
   animation: valueGlow var(--glow-duration) ease-in-out infinite;
 }
 @keyframes valueGlow {
@@ -257,8 +261,8 @@ body.fx-on .card .value {
   30% { text-shadow: 0 0 11px rgba(var(--accent-rgb), 0.45); }
 }
 
-/* Single kill switch for all of the above (see EFFECTS_ENABLED in
-   dashboard.js) plus a courtesy for anyone with reduced-motion set. */
+/* Courtesy override for anyone with reduced-motion set, regardless of
+   the admin panel's own per-effect toggles above. */
 @media (prefers-reduced-motion: reduce) {
   .card::before, .card .value, .card.flash {
     animation: none !important;

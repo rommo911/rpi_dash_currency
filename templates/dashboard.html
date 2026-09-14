@@ -6,7 +6,7 @@
 <title>Prices Dashboard</title>
 <link rel="stylesheet" href="{{ url_for('static', filename='css/dashboard.css') }}">
 </head>
-<body>
+<body class="{% if settings.fx_glass %}fx-glass {% endif %}{% if settings.fx_scan %}fx-scan {% endif %}{% if settings.fx_flash %}fx-flash {% endif %}{% if settings.fx_glow %}fx-glow{% endif %}">
 <div class="screen">
   <div class="header">
     <h1 id="dash-title">{{ settings.title }}</h1>

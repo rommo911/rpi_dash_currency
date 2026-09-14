@@ -118,6 +118,10 @@ def admin_save_all():
     data["settings"]["subtitle"] = subtitle
     data["settings"]["color_palette"] = palette
     data["settings"]["show_updated_at"] = "show_updated_at" in request.form
+    data["settings"]["fx_glass"] = "fx_glass" in request.form
+    data["settings"]["fx_scan"] = "fx_scan" in request.form
+    data["settings"]["fx_flash"] = "fx_flash" in request.form
+    data["settings"]["fx_glow"] = "fx_glow" in request.form
 
     save_data(data)
     return redirect(url_for("admin_page", msg=t["settings_saved"]))

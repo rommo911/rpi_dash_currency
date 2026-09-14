@@ -116,6 +116,8 @@ input[type=file] { color: var(--text-dim); font-size: 0.85rem; }
   margin-bottom: 28px;
 }
 .settings-card h2 { font-size: 1.05rem; margin: 0 0 16px; }
+.settings-card h3 { font-size: 0.9rem; margin: 20px 0 4px; color: var(--text-dim); }
+.settings-card p.sub { margin: 0 0 14px; }
 .settings-card .fields { display: flex; flex-wrap: wrap; gap: 12px; align-items: flex-end; }
 .settings-card label.field-label {
   display: block;

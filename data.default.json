@@ -39,6 +39,10 @@
     "subtitle": "\u0627\u0644\u0633\u0639\u0631 \u0627\u0644\u062d\u0627\u0644\u064a",
     "admin_language": "en",
     "show_updated_at": true,
-    "color_palette": "midnight"
+    "color_palette": "midnight",
+    "fx_glass": true,
+    "fx_scan": true,
+    "fx_flash": true,
+    "fx_glow": true
   }
 }

@@ -22,6 +22,16 @@ DEFAULT_SETTINGS = {
     "admin_language": "ar",
     "show_updated_at": True,
     "color_palette": DEFAULT_PALETTE,
+    # Per-effect toggles (dashboard.css's fx-glass/fx-scan/fx-flash/fx-glow
+    # body classes) — default True to match this project's previous
+    # always-on behavior. Independent switches, not one master flag, so a
+    # weak board (Pi Zero, Orange Pi Zero 3) can drop just the expensive
+    # ones (backdrop-filter blur is the usual culprit) while keeping the
+    # cheap ones.
+    "fx_glass": True,
+    "fx_scan": True,
+    "fx_flash": True,
+    "fx_glow": True,
 }
 
 _DEFAULT_NET_CONFIG = {"wifi": [], "ap_fallback": {"enabled": False, "ssid": "", "password": ""}}

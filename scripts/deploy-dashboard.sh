@@ -160,6 +160,82 @@ sudo systemctl restart systemd-journald || warn "Failed to restart systemd-journ
 if [[ ! -f "$INSTALL_DIR/scripts/auto-update.conf" ]]; then
   cp "$INSTALL_DIR/scripts/auto-update.conf.example" "$INSTALL_DIR/scripts/auto-update.conf"
 fi
+# detect_active_wifi <ssid_var> <password_var> — best-effort discovery of
+# whatever Wi-Fi network THIS box is already actually connected to right
+# now (set up by provision-pi.sh, an Armbian board's own image-bring-up
+# config, or by hand) so the net_config.json seed below can carry it
+# forward. Without this, dashboard-net-apply.sh's first reconcile pass
+# overwrites the exact netplan file provision-pi.sh just wrote real
+# credentials into (both use /etc/netplan/90-dashboard-wifi.yaml) — or,
+# on nmcli, ranks net_config.default.json's placeholder "kiosk"/"kiosk2"
+# profiles above the real one — with a config nothing is actually in
+# range of, breaking the connection this same deploy is running over.
+# Only reports a network that's connected RIGHT NOW (a real default
+# route/GENERAL.STATE==100); if nothing is currently connected there is
+# no live connection to lose, so it's left to net_config.default.json/the
+# admin panel as before. Sets both vars to "" and returns success on any
+# "nothing found" path — this must never fail the deploy.
+detect_active_wifi() {
+  local -n _ssid_out="$1" _password_out="$2"
+  _ssid_out=""
+  _password_out=""
+
+  if command -v nmcli >/dev/null 2>&1; then
+    local dev state conn
+    dev="$(nmcli -t -f DEVICE,TYPE device status 2>/dev/null | awk -F: '$2=="wifi"{print $1; exit}')"
+    [[ -z "$dev" ]] && return 0
+    state="$(nmcli -t -f GENERAL.STATE device show "$dev" 2>/dev/null | cut -d: -f1)"
+    [[ "$state" == "100" ]] || return 0
+    conn="$(nmcli -t -f GENERAL.CONNECTION device show "$dev" 2>/dev/null | cut -d: -f2)"
+    [[ -z "$conn" || "$conn" == "--" ]] && return 0
+    _ssid_out="$(nmcli -g 802-11-wireless.ssid connection show "$conn" 2>/dev/null)"
+    [[ -z "$_ssid_out" ]] && _ssid_out="$conn"
+    _password_out="$(sudo nmcli -s -g 802-11-wireless-security.psk connection show "$conn" 2>/dev/null)"
+    return 0
+  fi
+
+  if command -v netplan >/dev/null 2>&1 && [[ -d /etc/netplan ]]; then
+    local d dev=""
+    for d in /sys/class/net/*/wireless; do
+      [[ -d "$d" ]] || continue
+      dev="$(basename "$(dirname "$d")")"
+      break
+    done
+    [[ -z "$dev" ]] && return 0
+    ip -4 route show dev "$dev" 2>/dev/null | grep -q '^default' || return 0
+
+    if ! python3 -c "import yaml" >/dev/null 2>&1; then
+      sudo apt-get install -y python3-yaml >/dev/null 2>&1 || true
+    fi
+    python3 -c "import yaml" >/dev/null 2>&1 || return 0
+
+    local out
+    out="$(sudo python3 - "$dev" <<'PYEOF'
+import glob, sys
+import yaml
+
+wifi_dev = sys.argv[1]
+for path in glob.glob("/etc/netplan/*.yaml"):
+    try:
+        with open(path, encoding="utf-8") as f:
+            doc = yaml.safe_load(f) or {}
+    except Exception:
+        continue
+    aps = (((doc.get("network") or {}).get("wifis") or {}).get(wifi_dev) or {}).get("access-points") or {}
+    for ssid, opts in aps.items():
+        print(ssid)
+        print((opts or {}).get("password") or "")
+        break
+    else:
+        continue
+    break
+PYEOF
+)"
+    _ssid_out="$(sed -n '1p' <<<"$out")"
+    _password_out="$(sed -n '2p' <<<"$out")"
+  fi
+}
+
 # net_config.json is the Wi-Fi/hotspot desired state the admin panel writes
 # and dashboard-net-apply polls. Without this copy a freshly provisioned
 # board came up with NO known networks and NO hotspot fallback at all — it
@@ -174,6 +250,25 @@ fi
 # save_net_config() re-applies on every write in app.py.
 if [[ ! -f "$INSTALL_DIR/net_config.json" ]]; then
   cp "$INSTALL_DIR/net_config.default.json" "$INSTALL_DIR/net_config.json"
+  DETECTED_WIFI_SSID=""
+  DETECTED_WIFI_PASSWORD=""
+  detect_active_wifi DETECTED_WIFI_SSID DETECTED_WIFI_PASSWORD
+  if [[ -n "$DETECTED_WIFI_SSID" ]]; then
+    log_info "Already connected to Wi-Fi '$DETECTED_WIFI_SSID' — carrying it into net_config.json instead of the placeholder default"
+    python3 - "$INSTALL_DIR/net_config.json" "$DETECTED_WIFI_SSID" "$DETECTED_WIFI_PASSWORD" <<'PYEOF'
+import json, sys
+
+path, ssid, password = sys.argv[1], sys.argv[2], sys.argv[3]
+with open(path, encoding="utf-8") as f:
+    cfg = json.load(f)
+wifi = [slot for slot in (cfg.get("wifi") or []) if slot.get("ssid") != ssid]
+wifi.insert(0, {"ssid": ssid, "password": password})
+cfg["wifi"] = wifi[:2]
+with open(path, "w", encoding="utf-8") as f:
+    json.dump(cfg, f, indent=2)
+    f.write("\n")
+PYEOF
+  fi
   chmod 600 "$INSTALL_DIR/net_config.json"
 fi
 # Auto-update is a flag FILE (see app.py/auto-update.sh), not a data.json
