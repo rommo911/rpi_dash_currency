@@ -6,6 +6,17 @@ let lastCount = 0;
 let lastHostInfo = { hostname: '', ip: '' };
 let lastPrices = {}; // code -> price, for the update-flash effect
 
+// code -> card element, kept across renders. refresh() used to tear down
+// and rebuild every card from scratch on every poll that had ANY price
+// change, even for the 4 other cards whose price didn't move — full
+// innerHTML replace, fresh <img> decode, full grid reflow, all of it. On
+// the Orange Pi Zero 3's weak GPU that's a visible stutter exactly when a
+// price updates, regardless of how cheap the CSS animation itself is.
+// Keeping these nodes around and only touching the ones that actually
+// changed is the real fix.
+const cardEls = new Map();
+let currentValueSize = 0; // px — last computed by layoutGrid(), reused by fitValueText()
+
 let hostInfoShown = false;
 
 function showHostInfo() {
@@ -84,7 +95,26 @@ function bestGridSplit(n, w, h, gapX, gapY) {
   return best || { cols: 1, rows: 1, cellSize: Math.min(w, h) };
 }
 
-function fitGrid() {
+// fitValueText — keep one formatted price on one line without ellipsis.
+// Longer values get a smaller font, short values keep the largest
+// possible size. Reads currentValueSize as set by the last layoutGrid()
+// call rather than recomputing grid geometry itself, so a single card's
+// price update can refit just that card without re-measuring the rest.
+function fitValueText(valueEl) {
+  const textLength = Math.max(1, valueEl.textContent.trim().length);
+  const width = valueEl.getBoundingClientRect().width;
+  const fittedSize = width / textLength * 1.55;
+  valueEl.style.fontSize = Math.min(currentValueSize, fittedSize) + 'px';
+}
+
+// layoutGrid — sizes the grid template and every per-card CSS variable
+// from scratch, then refits every card's price text against the new
+// sizing. Only needed when the number of displayed cards changes or the
+// viewport resizes — NOT on every poll. Forcing this (and its per-card
+// getBoundingClientRect() reflow) on every single 5s tick regardless of
+// whether anything actually changed was the main source of stutter on
+// weak boards; see refresh()'s structuralChange check.
+function layoutGrid() {
   const gridWrap = document.getElementById('grid-wrap');
   const grid = gridWrap.querySelector('.grid');
   if (!grid || lastCount === 0) return;
@@ -116,17 +146,26 @@ function fitGrid() {
   grid.style.setProperty('--icon-w', compactLayout ? (iconHeight * 1.5) + 'px' : (95 * iconScale) + '%');
   grid.style.setProperty('--code-size', (available * (compactLayout ? 0.12 : 0.22)) + 'px');
   grid.style.setProperty('--name-size', (available * (compactLayout ? 0.075 : 0.14)) + 'px');
-  const valueSize = available * (compactLayout ? 0.22 : 0.38);
-  grid.style.setProperty('--value-size', valueSize + 'px');
+  currentValueSize = available * (compactLayout ? 0.22 : 0.38);
+  grid.style.setProperty('--value-size', currentValueSize + 'px');
 
-  // Keep every formatted price on one line without ellipsis. Longer values
-  // get a smaller font, while short values keep the largest possible size.
-  grid.querySelectorAll('.value').forEach(value => {
-    const textLength = Math.max(1, value.textContent.trim().length);
-    const width = value.getBoundingClientRect().width;
-    const fittedSize = width / textLength * 1.55;
-    value.style.fontSize = Math.min(valueSize, fittedSize) + 'px';
-  });
+  grid.querySelectorAll('.value').forEach(fitValueText);
+}
+
+// buildCard — the one-time DOM construction for a currency never shown
+// before. esc()/safeFlagSrc() are required here since this goes through
+// innerHTML (see CLAUDE.md); in-place updates in refresh() below use
+// textContent instead, which needs no escaping at all.
+function buildCard(c) {
+  const card = document.createElement('div');
+  card.className = 'card';
+  card.innerHTML = `
+    <div class="icon-badge">${c.flag ? `<img src="${safeFlagSrc(c.flag)}" alt="${esc(c.name)} flag">` : ''}</div>
+    <div class="code">${esc(c.code)}</div>
+    <div class="name">${esc(c.name)}</div>
+    <div class="value">${esc(c.symbol)}${fmt(c.price)}</div>
+  `;
+  return card;
 }
 
 async function refresh() {
@@ -171,33 +210,84 @@ async function refresh() {
     // The screen is sized for a handful of big tiles, not a scrolling
     // list — cap what's shown even if more are enabled in the panel.
     const shown = (d.currencies || []).slice(0, MAX_DISPLAYED_CURRENCIES);
+    // Only a change in WHICH currencies are shown (enabled/disabled/added/
+    // removed, or the very first render) needs the full grid re-layout —
+    // a plain price tick on an already-shown currency doesn't change
+    // geometry at all, just that one card's text.
+    const newCodes = new Set(shown.map(c => c.code));
+    const structuralChange = newCodes.size !== cardEls.size || [...newCodes].some(code => !cardEls.has(code));
     lastCount = shown.length;
+
     if (lastCount === 0) {
       wrap.innerHTML = '<div class="empty">No currencies enabled. Add or enable some from the control panel.</div>';
+      cardEls.clear();
     } else {
-      const grid = document.createElement('div');
-      grid.className = 'grid';
-      const nextPrices = {};
+      let grid = wrap.querySelector('.grid');
+      if (!grid) {
+        wrap.innerHTML = '';
+        grid = document.createElement('div');
+        grid.className = 'grid';
+        wrap.appendChild(grid);
+      }
+
+      const changedValueEls = [];
       shown.forEach(c => {
-        const card = document.createElement('div');
         // lastPrices[c.code] === undefined means "first time we've seen
         // this currency" (page just loaded, or it was just enabled) —
         // never flash that, only an actual change from a known value.
-        const changed = d.fx_flash && lastPrices[c.code] !== undefined && lastPrices[c.code] !== c.price;
-        card.className = changed ? 'card flash' : 'card';
-        card.innerHTML = `
-          <div class="icon-badge">${c.flag ? `<img src="${safeFlagSrc(c.flag)}" alt="${esc(c.name)} flag">` : ''}</div>
-          <div class="code">${esc(c.code)}</div>
-          <div class="name">${esc(c.name)}</div>
-          <div class="value">${esc(c.symbol)}${fmt(c.price)}</div>
-        `;
+        const priceChanged = lastPrices[c.code] !== undefined && lastPrices[c.code] !== c.price;
+        let card = cardEls.get(c.code);
+        if (!card) {
+          card = buildCard(c);
+          cardEls.set(c.code, card);
+        } else {
+          const codeEl = card.querySelector('.code');
+          if (codeEl.textContent !== c.code) codeEl.textContent = c.code;
+          const nameEl = card.querySelector('.name');
+          if (nameEl.textContent !== c.name) nameEl.textContent = c.name;
+          const iconEl = card.querySelector('.icon-badge');
+          const wantedFlag = safeFlagSrc(c.flag);
+          const currentFlag = iconEl.querySelector('img');
+          if (wantedFlag !== (currentFlag ? currentFlag.getAttribute('src') : '')) {
+            // The one spot here still touching innerHTML — same esc()
+            // rule as buildCard() applies.
+            iconEl.innerHTML = wantedFlag ? `<img src="${wantedFlag}" alt="${esc(c.name)} flag">` : '';
+          }
+          const valueEl = card.querySelector('.value');
+          const wantedValue = `${c.symbol || ''}${fmt(c.price)}`;
+          if (valueEl.textContent !== wantedValue) {
+            valueEl.textContent = wantedValue;
+            changedValueEls.push(valueEl);
+          }
+        }
+        if (priceChanged && d.fx_flash) {
+          // Re-triggering a CSS animation on a node that already has the
+          // class requires an actual remove -> reflow -> re-add, not just
+          // leaving the class in place (which the browser won't replay).
+          card.classList.remove('flash');
+          void card.offsetWidth;
+          card.classList.add('flash');
+        }
+        // appendChild on an existing child MOVES it — cheap no-op when
+        // already in the right spot, and keeps DOM order matching
+        // `shown`'s order without a separate reordering pass.
         grid.appendChild(card);
-        nextPrices[c.code] = c.price;
       });
-      lastPrices = nextPrices;
-      wrap.innerHTML = '';
-      wrap.appendChild(grid);
-      fitGrid();
+
+      for (const [code, el] of cardEls) {
+        if (!newCodes.has(code)) {
+          el.remove();
+          cardEls.delete(code);
+        }
+      }
+
+      lastPrices = Object.fromEntries(shown.map(c => [c.code, c.price]));
+
+      if (structuralChange) {
+        layoutGrid(); // re-measures every card — only worth it when the set changed
+      } else if (changedValueEls.length) {
+        changedValueEls.forEach(fitValueText); // just the cards whose value text actually changed
+      }
     }
 
     document.getElementById('footer').hidden = !d.show_updated_at;
@@ -215,7 +305,7 @@ async function refresh() {
 let resizeTimer = null;
 window.addEventListener('resize', () => {
   clearTimeout(resizeTimer);
-  resizeTimer = setTimeout(fitGrid, 100);
+  resizeTimer = setTimeout(layoutGrid, 100);
 });
 
 refresh();
