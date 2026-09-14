@@ -6,7 +6,7 @@ import os
 import socket
 import time
 
-from config import DATA_FILE, NET_CONFIG_FILE, NET_STATUS_FILE
+from config import DATA_FILE, DEFAULT_PALETTE, NET_CONFIG_FILE, NET_STATUS_FILE, PALETTE_CHOICES
 from i18n import TRANSLATIONS
 
 DEFAULT_CURRENCIES = [
@@ -21,6 +21,7 @@ DEFAULT_SETTINGS = {
     "subtitle": "Current prices",
     "admin_language": "ar",
     "show_updated_at": True,
+    "color_palette": DEFAULT_PALETTE,
 }
 
 _DEFAULT_NET_CONFIG = {"wifi": [], "ap_fallback": {"enabled": False, "ssid": "", "password": ""}}
@@ -60,6 +61,9 @@ def load_data():
                 dirty = True
     if data["settings"].get("admin_language") not in TRANSLATIONS:
         data["settings"]["admin_language"] = DEFAULT_SETTINGS["admin_language"]
+        dirty = True
+    if data["settings"].get("color_palette") not in PALETTE_CHOICES:
+        data["settings"]["color_palette"] = DEFAULT_PALETTE
         dirty = True
     if dirty:
         save_data(data)

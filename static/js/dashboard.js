@@ -160,6 +160,10 @@ async function refresh() {
     }
     lastUpdatedAt = d.updated_at;
 
+    if (d.color_palette) {
+      document.documentElement.dataset.palette = d.color_palette;
+    }
+
     document.getElementById('dash-title').textContent = d.title || '';
     document.getElementById('dash-subtitle').textContent = d.subtitle || '';
 

@@ -1,4 +1,14 @@
-:root {
+/* Color palettes. Each [data-palette] block is one complete, self-
+   contained look (dark or light baked in, not a separate toggle) —
+   dashboard.html sets data-palette from settings.color_palette (server-
+   rendered) and dashboard.js keeps it in sync on every poll, so a palette
+   change made in /admin shows up live within 5s, no reload. --accent-rgb
+   is the same color as --accent, spelled out as bare "r, g, b" — CSS
+   can't derive rgba() components from a hex custom property, and the
+   glow/scan/flash effects further down need that to follow the palette
+   instead of being hardcoded to one color. Adding a 5th palette = one
+   more block here + one more <option> in templates/admin.html. */
+:root, :root[data-palette="midnight"] {
   --bg-1: #0f172a;
   --bg-2: #1e1b4b;
   --card-bg: rgba(255, 255, 255, 0.06);
@@ -6,6 +16,40 @@
   --text-main: #f8fafc;
   --text-dim: #94a3b8;
   --accent: #22d3ee;
+  --accent-rgb: 34, 211, 238;
+}
+:root[data-palette="emerald"] {
+  --bg-1: #06201b;
+  --bg-2: #0e3b2e;
+  --card-bg: rgba(255, 255, 255, 0.05);
+  --card-border: rgba(255, 255, 255, 0.10);
+  --text-main: #f0fdf4;
+  --text-dim: #8fb3a3;
+  --accent: #34d399;
+  --accent-rgb: 52, 211, 153;
+}
+:root[data-palette="sunset"] {
+  --bg-1: #1c1007;
+  --bg-2: #351c08;
+  --card-bg: rgba(255, 255, 255, 0.05);
+  --card-border: rgba(255, 255, 255, 0.10);
+  --text-main: #fef6e8;
+  --text-dim: #c9a876;
+  --accent: #f59e0b;
+  --accent-rgb: 245, 158, 11;
+}
+:root[data-palette="pearl"] {
+  --bg-1: #f4f6fb;
+  --bg-2: #e7ecf5;
+  --card-bg: rgba(15, 23, 42, 0.04);
+  --card-border: rgba(15, 23, 42, 0.10);
+  --text-main: #0f172a;
+  --text-dim: #55617a;
+  --accent: #4f46e5;
+  --accent-rgb: 79, 70, 229;
+}
+
+:root {
   --dashboard-font: "Noto Sans Arabic";
 
   /* Timing knobs for the effects below — tune here, no need to touch the
@@ -127,7 +171,7 @@ body.fx-on .card {
   inset: 0;
   padding: 3px;
   border-radius: inherit;
-  background: conic-gradient(from var(--scan-angle), transparent 0deg, transparent 300deg, rgba(34, 211, 238, 0.25) 330deg, rgba(34, 211, 238, 0.25) 360deg);
+  background: conic-gradient(from var(--scan-angle), transparent 0deg, transparent 300deg, rgba(var(--accent-rgb), 0.25) 330deg, rgba(var(--accent-rgb), 0.25) 360deg);
   -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
   -webkit-mask-composite: xor;
   mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
@@ -155,9 +199,9 @@ body.fx-on .card.flash {
   animation: cardFlash var(--flash-duration) ease-out;
 }
 @keyframes cardFlash {
-  0%   { box-shadow: 0 0 0 0 rgba(34, 211, 238, 0.9); border-color: rgba(34, 211, 238, 0.9); transform: scale(1); }
-  25%  { box-shadow: 0 0 55px 16px rgba(34, 211, 238, 0.55); border-color: rgba(34, 211, 238, 0.8); transform: scale(1.03); }
-  100% { box-shadow: 0 0 70px 20px rgba(34, 211, 238, 0); border-color: var(--card-border); transform: scale(1); }
+  0%   { box-shadow: 0 0 0 0 rgba(var(--accent-rgb), 0.9); border-color: rgba(var(--accent-rgb), 0.9); transform: scale(1); }
+  25%  { box-shadow: 0 0 55px 16px rgba(var(--accent-rgb), 0.55); border-color: rgba(var(--accent-rgb), 0.8); transform: scale(1.03); }
+  100% { box-shadow: 0 0 70px 20px rgba(var(--accent-rgb), 0); border-color: var(--card-border); transform: scale(1); }
 }
 .icon-badge {
   width: var(--icon-w, 90%);
@@ -209,8 +253,8 @@ body.fx-on .card .value {
   animation: valueGlow var(--glow-duration) ease-in-out infinite;
 }
 @keyframes valueGlow {
-  0%, 20%, 100% { text-shadow: 0 0 0 rgba(34, 211, 238, 0); }
-  30% { text-shadow: 0 0 11px rgba(34, 211, 238, 0.45); }
+  0%, 20%, 100% { text-shadow: 0 0 0 rgba(var(--accent-rgb), 0); }
+  30% { text-shadow: 0 0 11px rgba(var(--accent-rgb), 0.45); }
 }
 
 /* Single kill switch for all of the above (see EFFECTS_ENABLED in
@@ -237,7 +281,10 @@ body.fx-on .card .value {
   left: 16px;
   bottom: 14px;
   font-size: 0.85rem;
-  color: var(--text-dim);
+  /* Fixed light-on-dark, not var(--text-dim) — this chip's own
+     background is always dark regardless of palette (including Pearl's
+     light theme), so text-dim (dark on Pearl) would be unreadable here. */
+  color: rgba(255, 255, 255, 0.85);
   background: rgba(0, 0, 0, 0.35);
   padding: 6px 12px;
   border-radius: 8px;

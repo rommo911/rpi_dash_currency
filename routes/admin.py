@@ -6,7 +6,8 @@ import re
 from flask import redirect, render_template, request, url_for
 
 from config import (
-    MAX_CODE_LEN, MAX_NAME_LEN, MAX_PRICE_VALUE, MAX_SUBTITLE_LEN, MAX_SYMBOL_LEN, MAX_TITLE_LEN,
+    DEFAULT_PALETTE, MAX_CODE_LEN, MAX_NAME_LEN, MAX_PRICE_VALUE, MAX_SUBTITLE_LEN, MAX_SYMBOL_LEN,
+    MAX_TITLE_LEN, PALETTE_CHOICES,
 )
 from core import app
 from helpers.flags import fetch_suggested_flag, save_uploaded_flag, delete_flag_file
@@ -37,6 +38,7 @@ def admin_page():
         max_symbol_len=MAX_SYMBOL_LEN,
         max_code_len=MAX_CODE_LEN,
         max_price_value=MAX_PRICE_VALUE,
+        palette_options=[(pid, t[f"palette_{pid}"]) for pid in PALETTE_CHOICES],
         csrf_token=csrf_token(),
     )
 
@@ -108,8 +110,13 @@ def admin_save_all():
     for c in data["currencies"]:
         c.update(updates[c["code"]])
 
+    palette = request.form.get("color_palette", DEFAULT_PALETTE)
+    if palette not in PALETTE_CHOICES:
+        palette = DEFAULT_PALETTE
+
     data["settings"]["title"] = title
     data["settings"]["subtitle"] = subtitle
+    data["settings"]["color_palette"] = palette
     data["settings"]["show_updated_at"] = "show_updated_at" in request.form
 
     save_data(data)

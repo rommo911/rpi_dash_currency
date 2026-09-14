@@ -48,6 +48,14 @@
           <label class="field-label" for="subtitle">{{ t.field_subtitle }}</label>
           <input type="text" id="subtitle" name="subtitle" value="{{ settings.subtitle }}" maxlength="{{ max_subtitle_len }}">
         </div>
+        <div>
+          <label class="field-label" for="color_palette">{{ t.field_palette }}</label>
+          <select id="color_palette" name="color_palette">
+            {% for pid, label in palette_options %}
+            <option value="{{ pid }}" {% if settings.color_palette == pid %}selected{% endif %}>{{ label }}</option>
+            {% endfor %}
+          </select>
+        </div>
         <label class="chk"><input type="checkbox" name="show_updated_at" {% if settings.show_updated_at %}checked{% endif %}> {{ t.show_updated_label }}</label>
       </div>
     </div>
