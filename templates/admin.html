@@ -28,9 +28,8 @@
   {% if msg %}<div class="msg ok">{{ msg }}</div>{% endif %}
   {% if error %}<div class="msg err">{{ error }}</div>{% endif %}
 
-  <!-- Each currency's Remove button lives visually inside the row below,
-       but submits one of these standalone per-currency forms instead of the
-       big save-all form, via the button's form="..." attribute (HTML5). -->
+  <!-- Standalone per-currency delete forms; the Remove button below links
+       via form="..." (HTML5) instead of nesting inside the big save-all form. -->
   {% for c in currencies %}
   <form id="delete-{{ c.code }}" method="post" action="{{ url_for('admin_delete_currency', code=c.code) }}"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"></form>
   {% endfor %}

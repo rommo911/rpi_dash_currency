@@ -12,17 +12,13 @@ LOG_FILE = os.path.join(LOG_DIR, "app.log")
 VERSION_FILE = os.path.join(APP_DIR, "VERSION")
 ALLOWED_FLAG_EXTS = {"png", "jpg", "jpeg"}
 
-# scripts/auto-update.sh polls these two flag files; presence/absence *is*
-# the state, no content is read. ENABLED = admin's "auto-update" checkbox.
-# CHECK_NOW = one-shot "check now" button, deleted by the script after one run.
+# Presence/absence is the state; auto-update.sh polls these two files.
 AUTO_UPDATE_ENABLED_FLAG = os.path.join(APP_DIR, "auto-update.enabled")
 AUTO_UPDATE_CHECK_NOW_FLAG = os.path.join(APP_DIR, "auto-update.check-now")
 SERVICE_NAME = "currency-dashboard"
 
-# This app never holds sudo. These are plain files describing DESIRED
-# state; scripts/files/network/dashboard-net-apply.sh (root daemon) polls
-# them and does the real nmcli/systemctl work, then publishes OBSERVED
-# state to NET_STATUS_FILE for the app to read back.
+# Never holds sudo: plain desired-state files, applied by the root
+# dashboard-net-apply daemon, which publishes observed state to NET_STATUS_FILE.
 NET_CONFIG_FILE = os.path.join(APP_DIR, "net_config.json")
 REBOOT_REQUEST_FLAG = os.path.join(APP_DIR, "reboot.request")
 NET_STATUS_FILE = "/run/dashboard-net/status.json"
@@ -33,15 +29,12 @@ ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "")
 if not ADMIN_PASSWORD:
     raise RuntimeError("ADMIN_PASSWORD is not set; configure the project .env file before starting the app")
 
-# Best-effort guess from file presence; app.py sets this for real once it
-# has actually confirmed the HTTPS listener bound. Mutated after import —
-# always access as `config.HTTPS_ENABLED`, never `from config import
-# HTTPS_ENABLED` (that copies the value once and misses the later update).
+# Mutated after import by app.py once HTTPS actually binds — always access
+# as `config.HTTPS_ENABLED`, never `from config import HTTPS_ENABLED`.
 HTTPS_ENABLED = os.path.isfile(CERT_FILE) and os.path.isfile(KEY_FILE)
 
-# Admin login lockout: N failures from one IP within WINDOW seconds blocks
-# that IP. In-memory, resets on restart — fine for a single-instance Pi
-# app. fail2ban is the firewall-level backstop (see helpers/security.py).
+# Admin lockout: N failures/IP within WINDOW blocks it. In-memory, resets
+# on restart; fail2ban is the firewall-level backstop.
 ADMIN_MAX_FAILURES = 3
 ADMIN_LOCKOUT_WINDOW = 300  # seconds
 
@@ -59,10 +52,6 @@ MIN_WIFI_PASS_LEN = 8
 MAX_WIFI_PASS_LEN = 63  # WPA2-PSK bounds
 MAX_WIFI_SLOTS = 2
 
-# Dashboard color palettes. Each is a complete look (own dark/light choice
-# baked in, not a separate toggle) — the actual color values live in
-# static/css/dashboard.css under [data-palette="..."]. This list is just
-# the whitelist of valid IDs, shared by helpers/storage.py (defaulting/
-# migration) and routes/admin.py (form validation).
+# Valid palette IDs; actual colors live in dashboard.css [data-palette].
 PALETTE_CHOICES = ["midnight", "emerald", "sunset", "pearl"]
 DEFAULT_PALETTE = "midnight"

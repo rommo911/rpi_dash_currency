@@ -1,10 +1,5 @@
-# Everything below (matchbox's own stderr chatter, the curl polling loop,
-# and Chromium's own famously noisy stderr output once exec'd at the
-# bottom) would otherwise print straight to the tty1 console — the same
-# physical screen the kiosk uses — for the few seconds between login and
-# Chromium actually taking over the display. Redirecting this script's
-# own stdout/stderr once, up front, covers all of it (everything below
-# inherits these fds, including the final `exec`).
+# Redirects stdout/stderr once so matchbox/curl/Chromium noise doesn't
+# print to tty1 (the kiosk's own screen) before Chromium takes over.
 exec >"$HOME/.xinitrc.log" 2>&1
 
 xset -dpms
@@ -13,8 +8,6 @@ xset s noblank
 matchbox-window-manager -use_cursor no -use_titlebar no &
 sleep 1
 until curl -s http://localhost:80 >/dev/null; do sleep 1; done
-# X11 kiosk startup is intentionally kept in the foreground with exec.
-# This is compatible with both Raspberry Pi OS and Armbian/Orange Pi when
-# startx is launched from tty1, but Armbian images may require a distro-native
-# autologin method to reach this path automatically.
+# Kept in the foreground with exec — works on Pi OS and Armbian when
+# startx runs from tty1; Armbian may need distro-native autologin to reach this.
 exec sh -c 'rm -f "/home/kiosk/.config/chromium/SingletonLock" "/home/kiosk/.config/chromium/SingletonSocket" "/home/kiosk/.config/chromium/SingletonCookie" 2>/dev/null; exec $(command -v chromium-browser || command -v chromium) --kiosk --incognito --noerrant --disable-infobars --disable-session-crashed-bubble --check-for-update-interval=31536000 http://localhost:80'

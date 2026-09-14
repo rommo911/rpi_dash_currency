@@ -1,23 +1,10 @@
 #!/usr/bin/env bash
-# Put the Pi into maintenance mode: stop and disable the dashboard service,
-# pause the auto-updater timer, stop the kiosk browser from auto-launching
-# on the next boot, and kill any X/Chromium session currently running —
-# so the console is free and the app isn't fighting you (or the updater
-# timer) while you SSH in to do admin work.
-#
-# Reversible: re-running scripts/deploy-dashboard.sh restores everything
-# (service, updater timer, kiosk autostart) — that's the intended way
-# back, there's no separate "enable" script.
-#
-# Usage: ./disable-kiosk.sh
-#   (run as the normal user the Pi boots into, e.g. "dashboard" — it uses
-#   sudo where needed)
+# Maintenance mode: stops the service/updater/kiosk autostart, kills any
+# running X/Chromium. Reversible via deploy-dashboard.sh (no "enable" script).
 
 set -uo pipefail
-# Not set -e: this script's job is "make a best effort at everything on
-# the list," not "abort the whole thing because chromium wasn't running."
-# Each step reports what it did; nothing here is destructive if it's a
-# no-op because that piece was already stopped/disabled.
+# Not set -e: best-effort on every item, not abort-on-first-failure —
+# each step is a harmless no-op if already stopped/disabled.
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck disable=SC1091
@@ -45,15 +32,8 @@ else
 fi
 
 log_info "Disabling kiosk auto-boot"
-# The kiosk block in .bash_profile is managed by ensure_block_in_file (see
-# scripts/lib.sh) under the same 'currency-dashboard-kiosk' marker that
-# deploy-dashboard.sh's setup_console_x() writes — --remove-- rebuilds the
-# file with that whole block simply omitted, rather than trying to
-# pattern-match and neutralize the startx line in place. That in-place
-# approach used to be sed-based and once left an EMPTY if/then/fi body (a
-# bash syntax error that broke the rest of .bash_profile) — rebuilding the
-# file from a clean line array makes that whole bug class impossible: the
-# block is always removed as one complete unit, never partially edited.
+# Rebuilds .bash_profile with the kiosk block (ensure_block_in_file
+# marker) simply omitted, rather than pattern-matching in place — the old sed approach once left a broken empty if/fi body.
 if [[ -f "$HOME/.bash_profile" ]] && grep -q "# BEGIN currency-dashboard-kiosk" "$HOME/.bash_profile"; then
   ensure_block_in_file "$HOME/.bash_profile" "currency-dashboard-kiosk" --remove--
   echo "Removed the kiosk autostart block from ~/.bash_profile — kiosk will no longer auto-launch on boot."

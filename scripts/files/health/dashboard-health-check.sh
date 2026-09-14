@@ -1,20 +1,6 @@
 #!/bin/bash
-# Installed at /usr/local/sbin/dashboard-health-check by deploy-dashboard.sh,
-# triggered once ~2 minutes after every boot by dashboard-health-check.timer
-# (OnBootSec=120, no repeat). Runs as root (no User= in its unit, same as
-# wifi-ap-fallback.service/dashboard-net-apply.service) since it needs to
-# restart the service and reset the git checkout; the git/file operations
-# themselves drop to RUN_USER via `sudo -u` so ownership stays correct —
-# same pattern dashboard-net-apply.sh already uses for wifi-ap-fallback.sh.
-#
-# Deliberately the cheapest useful check: service active + /api/data
-# returns parseable JSON. On success, advances a `last-known-good` git tag
-# to HEAD and backs up the small gitignored runtime files (data.json,
-# config.py, .env, net_config.json) that aren't tracked by git at all. On
-# failure, rolls back to that tag/backup ONCE, restarts, and re-checks —
-# if still unhealthy after that, it stops and logs rather than looping.
-# No reboot is ever triggered here; this script itself only runs once per
-# boot (via the timer), so there's no extra retry-guard state needed.
+# Runs once, ~2min after boot. Root (no User=), but git/file ops drop to
+# RUN_USER. Checks service+/api/data; success tags last-known-good, failure rolls back once.
 set -u
 
 INSTALL_DIR="/home/kiosk/currency-dashboard"

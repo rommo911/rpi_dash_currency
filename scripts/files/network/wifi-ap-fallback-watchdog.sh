@@ -1,8 +1,6 @@
 #!/bin/bash
-# Installed at /usr/local/sbin/wifi-ap-fallback by scripts/wifi-ap-fallback.sh.
-# Not `set -e`: runs forever in a polling loop, and a single failed
-# nmcli/DBus call should be logged and retried on the next tick, not kill
-# the daemon.
+# Installed at /usr/local/sbin/wifi-ap-fallback. Not `set -e` — a single
+# failed nmcli/DBus call should log and retry next tick, not kill the daemon.
 set -u
 
 CONFIG="/etc/wifi-ap-fallback/config"

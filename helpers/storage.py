@@ -23,12 +23,8 @@ DEFAULT_SETTINGS = {
     "admin_language": "ar",
     "show_updated_at": True,
     "color_palette": DEFAULT_PALETTE,
-    # Per-effect toggles (dashboard.css's fx-glass/fx-scan/fx-flash/fx-glow
-    # body classes) — default True to match this project's previous
-    # always-on behavior. Independent switches, not one master flag, so a
-    # weak board (Pi Zero, Orange Pi Zero 3) can drop just the expensive
-    # ones (backdrop-filter blur is the usual culprit) while keeping the
-    # cheap ones.
+    # Per-effect toggles (dashboard.css fx-* classes), default True — lets
+    # a weak board drop just the expensive ones (e.g. glass blur).
     "fx_glass": True,
     "fx_scan": True,
     "fx_flash": True,
@@ -37,12 +33,8 @@ DEFAULT_SETTINGS = {
 
 _DEFAULT_NET_CONFIG = {"wifi": [], "ap_fallback": {"enabled": False, "ssid": "", "password": ""}}
 
-# routes/dashboard.py's /api/data polls load_data() every 5s regardless of
-# whether anything changed — re-reading and re-parsing data.json from the SD
-# card on every one of those requests is needless disk I/O (and wear) for
-# data that only actually changes when an admin saves something. Cached here
-# in memory, keyed by the file's mtime; only touches disk again once it's
-# actually moved (from this process's own save_data() or an external edit).
+# In-memory cache keyed by mtime — avoids re-reading data.json off the SD
+# card on every 5s dashboard poll when nothing has actually changed.
 _data_cache = {"mtime": None, "data": None}
 
 
@@ -58,11 +50,8 @@ def load_data():
 
     mtime = os.path.getmtime(DATA_FILE)
     if _data_cache["data"] is not None and _data_cache["mtime"] == mtime:
-        # A deep copy, never the cached object itself: callers (e.g.
-        # routes/admin.py) mutate the dict they get back in place before
-        # calling save_data() on it — handing out the cached object directly
-        # would let an in-progress edit corrupt what every other request
-        # sees before it's even been saved.
+        # Deep copy, never the cached object — callers mutate what they get
+        # back in place before save_data(), which would poison the cache.
         return copy.deepcopy(_data_cache["data"])
 
     with open(DATA_FILE) as f:
@@ -109,10 +98,8 @@ def save_data(data):
 
 
 def load_net_config():
-    """Desired Wi-Fi/hotspot state — see NET_CONFIG_FILE's comment in
-    config.py. Kept separate from data.json since data.json is loaded by
-    the public, unauthenticated dashboard/api routes and this file holds
-    plaintext Wi-Fi/hotspot passwords."""
+    """Desired Wi-Fi/hotspot state, kept separate from data.json since
+    that file is loaded by public routes and this one holds plaintext PSKs."""
     if not os.path.exists(NET_CONFIG_FILE):
         return {k: (v.copy() if isinstance(v, dict) else list(v)) for k, v in _DEFAULT_NET_CONFIG.items()}
     try:
@@ -132,9 +119,8 @@ def save_net_config(cfg):
 
 
 def read_net_status():
-    """Best-effort read of the daemon-published status file. Missing or
-    corrupt (daemon never ran, or it's the first few seconds after boot)
-    just means "unavailable" — never raises."""
+    """Best-effort read of the daemon-published status file — missing or
+    corrupt just means "unavailable", never raises."""
     try:
         with open(NET_STATUS_FILE, encoding="utf-8") as f:
             status = json.load(f)
@@ -145,9 +131,8 @@ def read_net_status():
 
 
 def get_lan_ip():
-    """Best-effort LAN IP for the on-screen overlay: a UDP "connect" (no
-    packet actually sent) just to read back which local address the
-    routing table would use for an outbound connection."""
+    """LAN IP via a UDP "connect" (no packet sent) — just reads back which
+    local address the routing table would use."""
     s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     try:
         s.connect(("8.8.8.8", 80))

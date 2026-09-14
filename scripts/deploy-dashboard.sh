@@ -1,31 +1,6 @@
 #!/usr/bin/env bash
-# Stage 3 of 3 (also safe to run entirely standalone): clone/update the
-# currency dashboard on a Raspberry Pi and boot straight into it in kiosk
-# mode. This is the default and always what happens unless you explicitly
-# opt out — kiosk mode is not skipped based on guessing what hardware
-# this is.
-#
-# Every installed config file below (systemd units, fail2ban, sudoers,
-# kiosk autostart, boot config) is a real file under scripts/files/,
-# rendered via lib.sh's install_file/ensure_block_in_file — nothing
-# here authors config content inline or edits an OS file with sed. See
-# scripts/lib.sh for why.
-#
-# Run this as the normal user the Pi boots into (e.g. "pi" or
-# "dashboard"), normally invoked automatically by harden-system.sh, but
-# also fine to run entirely on its own if you just want the app without
-# the security hardening.
-#
-# Usage:
-#   REPO_URL=https://github.com/<you>/rpi_dash_currency.git ./deploy-dashboard.sh
-#
-#   # Only for a board with no display attached (e.g. a headless Pi Zero W
-#   # you're reaching over the network) — skips Chromium/kiosk entirely.
-#   # You must ask for this explicitly; it is never assumed.
-#   HEADLESS=true REPO_URL=... ./deploy-dashboard.sh
-#
-# Re-running this script is safe: it pulls the latest code, reinstalls deps,
-# and re-applies the service/kiosk/cert/updater config.
+# Stage 3/3, standalone-safe: clone/update + boot into kiosk. Re-run to
+# redeploy. Usage: REPO_URL=... ./deploy-dashboard.sh (HEADLESS=true skips kiosk)
 
 set -euo pipefail
 
@@ -45,11 +20,8 @@ if [[ -f "$SCRIPT_DIR/lib.sh" ]]; then
   # shellcheck disable=SC1091
   source "$SCRIPT_DIR/lib.sh"
 else
-  # Running copied-alone, before the repo (and lib.sh/scripts/files with
-  # it) exists on disk yet — bare log/warn/is_auto cover everything used
-  # before the clone step below; install_file & friends are only
-  # called after it, by which point lib.sh is re-sourced from the fresh
-  # checkout (see FILES_DIR re-point below).
+  # Copied-alone, before lib.sh exists — bare log/warn/is_auto cover this
+  # point; install_file etc. need the real lib.sh, re-sourced below.
   log()  { echo -e "\n\033[1;36m==> $*\033[0m"; }
   warn() { echo -e "\033[1;33m$*\033[0m"; }
   is_auto() { [[ "${AUTO_DEFAULT:-false}" == "true" ]]; }
@@ -101,14 +73,8 @@ sudo mkdir -p /home/kiosk
 sudo chown "$USER":"$USER" /home/kiosk 2>/dev/null || true
 log_info "2/13 Cloning/updating repository into $INSTALL_DIR"
 if [[ -d "$INSTALL_DIR/.git" ]]; then
-  # A checkout from before data.json/config.py were gitignored may still
-  # have them TRACKED with local (real, live) modifications — untrack
-  # them first (keeps the on-disk file untouched) so the update below can
-  # never delete them. fetch+reset instead of a plain `git pull`: pull
-  # refuses outright on local changes to a path the merge touches (a loud
-  # but safe failure), while fetch+reset here — now that the untrack
-  # guard makes it safe — always succeeds, matching what
-  # scripts/auto-update.sh already does for consistency.
+  # Untrack data.json/config.py first so reset --hard can't delete local
+  # copies; fetch+reset (not pull) matches auto-update.sh.
   git -C "$INSTALL_DIR" rm --cached -q data.json config.py 2>/dev/null || true
   CURRENT_BRANCH="$(git -C "$INSTALL_DIR" rev-parse --abbrev-ref HEAD)"
   git -C "$INSTALL_DIR" fetch origin "$CURRENT_BRANCH"
@@ -116,11 +82,8 @@ if [[ -d "$INSTALL_DIR/.git" ]]; then
 else
   git clone "$REPO_URL" "$INSTALL_DIR"
 fi
-# Re-point FILES_DIR/lib.sh at the checkout we just ensured is current, in
-# case this script started from a different location than $INSTALL_DIR
-# (e.g. run copied-alone, before it had cloned anything) — the fallback
-# log/warn/is_auto above cover everything up to this point, but
-# install_file & friends (used from here on) need the real lib.sh.
+# Re-point at the fresh checkout in case this ran copied-alone before
+# ever cloning anything.
 FILES_DIR="$INSTALL_DIR/scripts/files"
 # shellcheck disable=SC1091
 source "$INSTALL_DIR/scripts/lib.sh"
@@ -133,10 +96,8 @@ sudo mkdir -p "$INSTALL_DIR" || true
 sudo chown -R "$USER":"$USER" "$INSTALL_DIR" 2>/dev/null || true
 
 log_info "3/13 Setting up local config (data.json, .env, net_config.json, auto-update.conf)"
-# These files are gitignored and never committed as themselves — copied
-# from their tracked templates only if missing, so a later `git reset --hard`
-# (see scripts/auto-update.sh) can never touch live prices, the real admin
-# password, or your chosen auto-update branch.
+# Gitignored, copied from templates only if missing, so reset --hard
+# (auto-update.sh) can never touch live data.
 NEW_ENV=false
 if [[ ! -f "$INSTALL_DIR/data.json" ]]; then
   cp "$INSTALL_DIR/data.default.json" "$INSTALL_DIR/data.json"
@@ -160,21 +121,8 @@ sudo systemctl restart systemd-journald || warn "Failed to restart systemd-journ
 if [[ ! -f "$INSTALL_DIR/scripts/auto-update.conf" ]]; then
   cp "$INSTALL_DIR/scripts/auto-update.conf.example" "$INSTALL_DIR/scripts/auto-update.conf"
 fi
-# detect_active_wifi <ssid_var> <password_var> — best-effort discovery of
-# whatever Wi-Fi network THIS box is already actually connected to right
-# now (set up by provision-pi.sh, an Armbian board's own image-bring-up
-# config, or by hand) so the net_config.json seed below can carry it
-# forward. Without this, dashboard-net-apply.sh's first reconcile pass
-# overwrites the exact netplan file provision-pi.sh just wrote real
-# credentials into (both use /etc/netplan/90-dashboard-wifi.yaml) — or,
-# on nmcli, ranks net_config.default.json's placeholder "kiosk"/"kiosk2"
-# profiles above the real one — with a config nothing is actually in
-# range of, breaking the connection this same deploy is running over.
-# Only reports a network that's connected RIGHT NOW (a real default
-# route/GENERAL.STATE==100); if nothing is currently connected there is
-# no live connection to lose, so it's left to net_config.default.json/the
-# admin panel as before. Sets both vars to "" and returns success on any
-# "nothing found" path — this must never fail the deploy.
+# detect_active_wifi <ssid_var> <password_var> — carries a currently-
+# connected network into net_config.json so first deploy doesn't overwrite it.
 detect_active_wifi() {
   local -n _ssid_out="$1" _password_out="$2"
   _ssid_out=""
@@ -236,18 +184,8 @@ PYEOF
   fi
 }
 
-# net_config.json is the Wi-Fi/hotspot desired state the admin panel writes
-# and dashboard-net-apply polls. Without this copy a freshly provisioned
-# board came up with NO known networks and NO hotspot fallback at all — it
-# would sit there unreachable until someone plugged in Ethernet or a
-# keyboard to reach /admin, which on a headless wall-mounted kiosk is the
-# one situation the AP fallback exists to prevent. Seeding it from the
-# tracked template makes a fresh board join a known network, or raise its
-# own AP, with zero manual steps.
-#
-# 600, not the default 644: unlike data.json this file holds plaintext
-# Wi-Fi/hotspot PSKs — same reasoning as .env above, and the same mode
-# save_net_config() re-applies on every write in app.py.
+# Seeds a fresh board with known networks/AP fallback, zero manual steps.
+# 600 perms: holds plaintext Wi-Fi/hotspot PSKs, like .env above.
 if [[ ! -f "$INSTALL_DIR/net_config.json" ]]; then
   cp "$INSTALL_DIR/net_config.default.json" "$INSTALL_DIR/net_config.json"
   DETECTED_WIFI_SSID=""
@@ -271,22 +209,14 @@ PYEOF
   fi
   chmod 600 "$INSTALL_DIR/net_config.json"
 fi
-# Auto-update is a flag FILE (see app.py/auto-update.sh), not a data.json
-# setting — the admin panel's "Enable automatic updates" checkbox
-# creates/removes it directly. Defaults to present (enabled) ONLY on a
-# genuinely fresh install (tied to NEW_ENV, same signal the password
-# prompt above uses) — matching this project's previous always-on
-# behavior for a first deploy, without ever re-enabling it behind an
-# admin's back on a later redeploy after they've explicitly unchecked it.
+# Flag file, admin-toggled. Defaults on only for a genuinely fresh
+# install (NEW_ENV) — never re-enabled behind an admin's back later.
 if [[ "$NEW_ENV" == true ]]; then
   touch "$INSTALL_DIR/auto-update.enabled" 2>/dev/null || true
 fi
 if [[ "$NEW_ENV" == true ]]; then
-  # -t 0 guards against a non-interactive run (automation, `ssh host cmd`
-  # with no pty, piped input, or --auto_default) — deploy-dashboard.sh is
-  # documented as safe to run unattended, and a bare `read` on
-  # closed/non-tty stdin returns non-zero, which set -e would treat as
-  # this whole script failing.
+  # -t 0 guards non-interactive runs (automation/piped stdin) — this
+  # script is documented safe to run unattended.
   SET_ADMIN_PW="n"
   if [[ -t 0 ]] && ! is_auto; then
     read -rp "Set a custom admin panel password now instead of the placeholder? [y/N]: " SET_ADMIN_PW || true
@@ -343,14 +273,9 @@ sudo systemctl daemon-reload
 sudo systemctl enable --now "${SERVICE_NAME}"
 
 log_info "7/13 Firewall: opening the HTTP and HTTPS ports"
-# Deliberately NOT gated on "is ufw active right now" — that check raced
-# harden-system.sh's own `ufw --force enable` a moment earlier on at
-# least one real deploy (ufw reported inactive at this exact instant, so
-# the rule was silently skipped and never added, even though ufw came up
-# active moments later). `ufw allow` queues the rule into ufw's rule set
-# regardless of whether ufw is currently enabled — it takes effect
-# whenever ufw is (or becomes) active, so there's nothing to race here.
-if command -v ufw >/dev/null 2>&1; then
+# Rules queue regardless of ufw's state, no race. Path fallback: /usr/sbin
+# is off kiosk's PATH, so `command -v` alone skipped this on a real deploy.
+if command -v ufw >/dev/null 2>&1 || [[ -x /usr/sbin/ufw ]]; then
   if [[ -n "$LAN_SUBNET" ]]; then
     sudo ufw allow from "$LAN_SUBNET" to any port "$APP_PORT" proto tcp
     sudo ufw allow from "$LAN_SUBNET" to any port "$HTTPS_PORT" proto tcp
@@ -358,30 +283,8 @@ if command -v ufw >/dev/null 2>&1; then
     sudo ufw allow "$APP_PORT"/tcp
     sudo ufw allow "$HTTPS_PORT"/tcp
   fi
-  # A LAN_SUBNET-scoped rule set locks out the emergency hotspot's OWN
-  # clients: the AP hands out 192.168.50.0/24 addresses, which are not in
-  # "$LAN_SUBNET", so with only the rule above plus harden-system.sh's
-  # equally-scoped 22/$APP_PORT/$HTTPS_PORT rules, a laptop joined to the
-  # fallback AP can associate, get a lease, and still reach nothing at all —
-  # which defeats the entire point of a fallback whose only job is to keep
-  # the box reachable when the normal LAN is gone. So open the AP subnet to
-  # the same ports.
-  #
-  # Applied unconditionally, NOT only in the LAN_SUBNET branch above: this
-  # script is explicitly re-runnable standalone (that's how the auto-updater
-  # and manual redeploys both use it), and such a run can easily have an
-  # empty LAN_SUBNET while harden-system.sh's 22/$APP_PORT/$HTTPS_PORT rules
-  # from the ORIGINAL provision are still subnet-scoped. Gating these on
-  # LAN_SUBNET would silently skip them in exactly that case. Redundant (not
-  # harmful) when everything is already open to Anywhere.
-  #
-  # NOT included here: the DHCP port itself. A DHCP DISCOVER is sent from
-  # source 0.0.0.0, so a from-subnet rule can never match it — that one has
-  # to be interface-scoped, and the daemon adds/removes it around each AP
-  # session (ap_firewall_open/ap_firewall_close in
-  # scripts/files/network/dashboard-net-apply.sh) since only the daemon
-  # knows which interface the AP actually came up on. Keep AP_SUBNET below
-  # in sync with AP_IFACE_CIDR there.
+  # Opens the AP subnet too, else hotspot clients are locked out. DHCP/67
+  # itself is interface-scoped, added by the daemon around each AP session.
   AP_SUBNET="192.168.50.0/24"
   sudo ufw allow from "$AP_SUBNET" to any port "$APP_PORT" proto tcp
   sudo ufw allow from "$AP_SUBNET" to any port "$HTTPS_PORT" proto tcp
@@ -395,11 +298,8 @@ fi
 log_info "8/13 Installing the auto-updater (git pull + cert renewal every 6h)"
 SYSTEMCTL_BIN="$(command -v systemctl)"
 SUDOERS_FILE="/etc/sudoers.d/${SERVICE_NAME}-updater"
-# Rendered to a LOCAL temp file first (not straight to /etc/sudoers.d)
-# so it can be validated with visudo before it's ever live, and so it
-# lands with the correct 440 root:root permissions via `install` — a
-# plain `sudo tee` would leave it world-readable, which sudoers must
-# never be.
+# Rendered to a temp file, visudo-validated, then installed with 440
+# perms — a plain `sudo tee` would leave it world-readable.
 SUDOERS_TMP="$(mktemp)"
 install_user_file "$FILES_DIR/sudoers/currency-dashboard-updater" "$SUDOERS_TMP"
 if sudo visudo -cf "$SUDOERS_TMP" >/dev/null 2>&1; then
@@ -433,44 +333,22 @@ else
 fi
 
 log_info "10/13 Installing the network/reboot reconciler (Wi-Fi + hotspot fallback + reboot from the admin panel)"
-# The Flask app itself never holds sudo/root for this feature — it only
-# ever writes plain files into its own workspace (net_config.json,
-# reboot.request). This root-run daemon (no User= in the unit, same as
-# wifi-ap-fallback.service) polls those files every few seconds and does
-# all the real nmcli/systemctl work to converge the system to match. See
-# scripts/files/network/dashboard-net-apply.sh's header comment for the
-# full design.
+# Flask never holds sudo — this root-run daemon (no User= in the unit)
+# polls its desired-state files and does the real nmcli/systemctl work.
 DAEMON_PATH="/usr/local/sbin/dashboard-net-apply"
 install_file "$FILES_DIR/network/dashboard-net-apply.sh" "$DAEMON_PATH"
 sudo chmod 755 "$DAEMON_PATH"
 install_file "$FILES_DIR/systemd/dashboard-net-apply.service" \
   "/etc/systemd/system/dashboard-net-apply.service"
 sudo systemctl daemon-reload
-# Upgrade path: the emergency AP's networkd drop-in used to be named
-# 90-dashboard-ap.network, which always lost to netplan's generated
-# 10-netplan-<dev>.network (systemd-networkd applies only the FIRST
-# matching file in lexical filename order across /etc, /run and /usr/lib —
-# /etc only wins for an identical filename). It is 05-dashboard-ap.network
-# now; remove any stale copy of the old one so an upgraded box is left in
-# exactly the same state as a freshly provisioned one.
+# Removes the old 90-dashboard-ap.network (always lost to netplan's
+# 10-netplan-*.network) so an upgraded box matches a fresh one.
 sudo rm -f /etc/systemd/network/90-dashboard-ap.network
 sudo systemctl enable --now dashboard-net-apply
 sudo systemctl restart dashboard-net-apply
 
-# On any image WITHOUT NetworkManager (confirmed live on Armbian/Orange Pi,
-# which uses netplan + systemd-networkd + wpa_supplicant instead), the
-# daemon above falls back to a netplan-based Wi-Fi backend and drives
-# hostapd directly for the emergency-AP fallback (DHCP is served by
-# systemd-networkd's own built-in DHCP-server role, already running and
-# proven on this box — no dnsmasq) — see that script's own header
-# comment for the full design. hostapd (plus `iw`, used only to read the
-# currently-associated SSID for the admin panel) is only needed on that
-# fallback path; a NetworkManager image (Raspberry Pi OS Bookworm+) never
-# touches it. Disabling its own persistent service immediately after
-# install is deliberate: this daemon always runs it as its own transient
-# `systemd-run` unit on demand, never the shared hostapd.service/its
-# default config, so that must never be left enabled to auto-start at
-# boot against an empty/absent config.
+# Non-NetworkManager images (Armbian) drive hostapd+iw directly for AP
+# fallback. Disabled here — it only runs on-demand via a transient unit.
 if ! command -v nmcli >/dev/null 2>&1; then
   log_warn "No NetworkManager detected — installing netplan-backend Wi-Fi fallback dependencies (hostapd, iw)"
   sudo apt-get install -y hostapd iw || \
@@ -487,14 +365,8 @@ for _ in $(seq 1 30); do
 done
 
 log_info "11/13 Installing the post-boot health check (auto-rollback on a bad boot)"
-# Runs once, ~2 minutes after every boot: if the service is active and
-# /api/data returns valid JSON, it records the current commit as
-# "last-known-good" (a git tag) and backs up the small gitignored runtime
-# files. If not, it rolls back to that tag/backup once and restarts —
-# see scripts/files/health/dashboard-health-check.sh's header comment for
-# the full design. Guards against exactly the failure mode of a corrupted
-# checkout (e.g. from a power loss mid-write) leaving a Pi stuck unbootable
-# with no display attached to debug it from.
+# ~2min post-boot: tags last-known-good if /api/data is healthy, else
+# rolls back once and restarts — guards against an unbootable checkout.
 HEALTH_SCRIPT_PATH="/usr/local/sbin/dashboard-health-check"
 install_file "$FILES_DIR/health/dashboard-health-check.sh" "$HEALTH_SCRIPT_PATH"
 sudo chmod 755 "$HEALTH_SCRIPT_PATH"
@@ -505,12 +377,8 @@ install_file "$FILES_DIR/systemd/dashboard-health-check.timer" \
 sudo systemctl daemon-reload
 sudo systemctl enable --now dashboard-health-check.timer
 
-# config.txt/cmdline.txt are OS-owned firmware files that also carry a lot
-# of Pi-model-specific content we must never touch — ensure_block_in_file
-# (config.txt: comment-delimited managed block) and ensure_tokens_in_cmdline
-# (cmdline.txt: a single line, no comment syntax at all, so tokens are
-# appended directly rather than wrapped in a block) both only ever ADD to
-# these files, never rewrite them wholesale.
+# config.txt/cmdline.txt are OS-owned — these helpers only ever ADD
+# (managed block / appended tokens), never rewrite wholesale.
 configure_boot_files() {
   local boot_dir
   boot_dir="$(detect_boot_dir)"
@@ -527,34 +395,13 @@ configure_boot_files() {
       armbian_env="/boot/firmware/armbianEnv.txt"
     fi
     if [[ -n "$armbian_env" ]]; then
-      # Mainline sunxi/rockchip DRM only lights up an HDMI connector when it
-      # sees a live hotplug-detect (HPD) signal from the display at boot —
-      # if the TV/monitor is off (or still warming up) when the board
-      # powers on, the connector can come up "disconnected" and X/Chromium
-      # never get a mode to render into, even after the TV is switched on
-      # later. `video=HDMI-A-1:<mode>e` (trailing "e" = force-enable) is
-      # the mainline-DRM equivalent of Raspberry Pi's
-      # hdmi_force_hotplug=1 — it forces that connector into the given
-      # mode unconditionally, independent of the live HPD line.
-      # "HDMI-A-1" is the generic DRM connector name for a board's first/
-      # only HDMI output (confirmed against this exact Orange Pi Zero 3
-      # via /sys/class/drm/card0-HDMI-A-1), not something board-specific
-      # we're guessing at.
+      # Forces HDMI on regardless of hotplug-detect (mainline-DRM
+      # equivalent of hdmi_force_hotplug=1), else a cold TV gets no mode.
       ensure_key_tokens_in_file --sudo "$armbian_env" "extraargs" "$FILES_DIR/boot/armbian-extraargs-tokens.txt"
       log_info "Ensured forced HDMI output mode is present in $armbian_env (extraargs=) — takes effect after a reboot"
 
-      # armbianEnv.txt's default `console=both` puts BOTH the serial UART
-      # and tty1 in the kernel's `console=` list, so every kernel/systemd
-      # boot message (and the "[ OK ] Started ..." status lines systemd
-      # itself prints) gets written straight to the HDMI display — visible
-      # scrolling boot log on a kiosk that's supposed to just show the
-      # dashboard. Switching to `console=serial` drops tty1 out of the
-      # kernel's console list entirely: tty1 stays blank/uninitialized
-      # (nothing to silence, because nothing is ever printed to it) from
-      # power-on until getty/X take it over, while the serial UART keeps
-      # carrying full boot output for debugging. This doesn't touch
-      # `bootlogo`/`splash=verbose` — those only matter to plymouth, which
-      # isn't installed on this image, so they're already inert.
+      # console=serial hides boot text on tty1 while keeping it on serial;
+      # doesn't touch bootlogo/splash (plymouth isn't installed here).
       ensure_key_value_in_file --sudo "$armbian_env" "console" "serial"
       log_info "Silenced kernel/systemd boot messages on the HDMI display in $armbian_env (console=serial; still visible over the serial UART) — takes effect after a reboot"
     else
@@ -577,37 +424,8 @@ configure_boot_files() {
 }
 
 reduce_network_wait_online_delay() {
-  # The dashboard itself never needs network readiness at startup
-  # (static local prices, no runtime API calls), but some
-  # *-wait-online.service unit is enabled on most Debian/Armbian/Pi OS
-  # images regardless, blocking network-online.target until the network
-  # stack considers itself fully "online". Confirmed live on an Orange Pi
-  # Zero 3 via `systemd-analyze critical-chain`: systemd-networkd-wait-
-  # online.service alone was ~10.5s of a ~15.6s total userspace boot,
-  # sitting directly in the chain that gates getty.target/
-  # graphical.target — i.e. the delay between power-on and the
-  # autologin/kiosk screen appearing.
-  #
-  # This only bounds how long systemd will wait for the unit via
-  # TimeoutStartSec (systemd's own external kill-timeout for the start
-  # job) — it does NOT disable, mask, or otherwise touch the unit's
-  # enablement or dependency graph, and leaves whatever wait-online
-  # implementation/args the OS image already ships completely alone.
-  # That distinction matters, not just style: an earlier version of this
-  # fix used `systemctl mask`, which is UNSAFE in practice — confirmed
-  # live on this same board, masking systemd-networkd-wait-online.service
-  # caused intermittent network flapping after reboot (brief connectivity
-  # then drop, repeatedly). Root cause: this board's image manages Wi-Fi
-  # via netplan + systemd-networkd (NetworkManager isn't even installed
-  # on it, despite that being this project's usual assumption — nmcli is
-  # not guaranteed present on every Armbian image), and
-  # systemd-networkd-wait-online.service is `BindsTo=systemd-networkd.
-  # service`, which reacted badly to being masked outright. A
-  # TimeoutStartSec cap avoids that risk entirely: if the unit finishes
-  # on its own (as it always does here, just slower than needed), nothing
-  # changes; if it doesn't finish within the cap, systemd kills it and
-  # network-online.target proceeds anyway (a `Wants=`, not `Requires=`,
-  # relationship — one failed/killed dependency doesn't block the target).
+  # wait-online.service ate ~10.5s of ~15.6s boot (confirmed live) — cap
+  # via TimeoutStartSec; masking it caused live network flapping instead.
   local unit
   for unit in systemd-networkd-wait-online.service NetworkManager-wait-online.service; do
     if systemctl list-unit-files "$unit" 2>/dev/null | grep -q "$unit"; then
@@ -628,34 +446,12 @@ else
 
 log_info "12/13 Configuring kiosk autostart"
 configure_boot_files
-# The launch command installed into each of the 4 kiosk autostart files
-# below (scripts/files/kiosk/{labwc,lxde}-autostart,
-# wayfire-autostart.snippet, xinitrc) is `sh -c '...; exec chromium ...'`
-# rather than a bare chromium invocation: Chromium leaves
-# SingletonLock/SingletonSocket/SingletonCookie symlinks in its profile
-# dir (~/.config/chromium) while running, and only cleans them up on a
-# graceful exit. A reboot, power loss, or `disable-kiosk.sh` killing the
-# process all skip that cleanup, so the NEXT launch finds a stale lock
-# pointing at a PID that no longer exists and refuses to start —
-# Chromium pops an "Unlock Profile and Relaunch" dialog instead of the
-# dashboard, and kiosk mode is stuck until someone manually deletes
-# those files. This was hit live on a real deploy. Since this kiosk only
-# ever runs one Chromium instance per X session (fresh tty1 login ->
-# single exec chain), any lock file found at launch time is by
-# definition stale, not a real concurrent instance — safe to
-# unconditionally clear before every launch. `exec` inside the wrapper
-# keeps chromium as the final foreground process either way (see the
-# .xinitrc note above about never backgrounding the last command).
-# The binary itself is resolved at runtime with
-# `$(command -v chromium-browser || command -v chromium)` inside that
-# static command — Raspberry Pi OS ships `chromium-browser`, Armbian/
-# Debian ships plain `chromium`, and the same installed file must work
-# unmodified on either.
+# Clears stale Chromium Singleton lock files before launch — a non-graceful
+# exit leaves them, causing a relaunch dialog instead of the dashboard (hit live).
 
 setup_labwc() {
-  # labwc doesn't blank/DPMS the screen by default on Pi OS Bookworm, so no
-  # xset-equivalent is needed here — configure_boot_files already covers
-  # the console/firmware-level blanking that would otherwise apply.
+  # labwc needs no xset-equivalent — configure_boot_files already
+  # covers console/firmware-level blanking.
   install_user_file "$FILES_DIR/kiosk/labwc-autostart" "$HOME/.config/labwc/autostart"
   if is_raspi_os && command -v raspi-config >/dev/null 2>&1; then
     sudo raspi-config nonint do_boot_behaviour B4 || true
@@ -681,83 +477,27 @@ setup_lxde() {
 }
 
 setup_console_x() {
-  # The Chromium launch command must be the FOREGROUND last command in
-  # .xinitrc (via exec, no trailing &) — xinit/startx tears the X session
-  # down the instant .xinitrc reaches EOF with nothing left to wait on.
-  # Backgrounding it made X start, launch Chromium, and immediately exit
-  # again a few seconds later ("Server terminated successfully (0)" in
-  # Xorg.0.log) every single time — this was a real bug, caught live on a
-  # deployed Pi. See scripts/files/kiosk/xinitrc — it already ends with
-  # `exec sh -c '...'`, keep it that way if you touch it.
-  #
-  # matchbox-window-manager is required here, not optional: bare xinit
-  # starts NO window manager at all, and without one nobody honors
-  # Chromium's --kiosk fullscreen request — it just gets whatever default
-  # size its toolkit picks. matchbox is the standard minimal WM for
-  # exactly this Pi-OS-Lite-kiosk case; it auto-maximizes any window it
-  # manages.
-  #
-  # The mouse pointer (visible on screen despite no mouse being attached)
-  # is hidden at the Xorg SERVER level via `startx -- -nocursor` in the
-  # bash_profile snippet below, not just matchbox's own -use_cursor no
-  # (which only controls whether matchbox itself draws/manages a cursor
-  # for the root window — the default X-server arrow cursor was still
-  # rendering on top of that). -nocursor tells Xorg not to draw a cursor
-  # sprite at all, ever.
-  #
-  # x11-xserver-utils (provides `xset`) is required, not optional, even
-  # though nothing above mentions it: scripts/files/kiosk/xinitrc calls
-  # `xset -dpms`, `xset s off`, `xset s noblank` to keep the screen from
-  # ever blanking. Without this package `xset` doesn't exist, those three
-  # calls fail with "command not found" and .xinitrc (no `set -e`) just
-  # carries on to matchbox/Chromium anyway — so DPMS is never actually
-  # disabled and the X server falls back to its default ~10-minute DPMS
-  # standby timeout. This was a real, live bug: confirmed on a deployed
-  # Orange Pi Zero 3 where the HDMI signal dropped to "no signal" after
-  # almost exactly 10 minutes while the dashboard/Chromium were still
-  # running fine underneath — and reproduced by finding `xset` genuinely
-  # missing from that board's installed packages.
+  # .xinitrc must end with exec, no trailing & (else X exits instantly).
+  # matchbox is required for --kiosk to fullscreen; xset (x11-xserver-utils) for DPMS.
   sudo apt install -y xserver-xorg xinit matchbox-window-manager x11-xserver-utils
   install_user_file "$FILES_DIR/kiosk/xinitrc" "$HOME/.xinitrc"
-  # install_user_file only writes content, never touches permissions —
-  # relying on an inherited/pre-existing executable bit (e.g. from an
-  # /etc/skel default) to make `startx`/`xinit` treat this as a direct
-  # client program is fragile and was confirmed to actually fail this
-  # way: overwriting .xinitrc through a path that recreates the inode
-  # (rather than truncate-in-place) reset it to non-executable, and
-  # xinit then silently launched Xorg with no client at all (bare black
-  # screen forever, no matchbox, no Chromium, no error visible anywhere
-  # on-screen since the console is now silent). chmod it explicitly so
-  # this never depends on what the file happened to be before.
+  # chmod explicit: install_user_file doesn't touch perms, and an
+  # inode-recreating write reset it non-executable before (confirmed live — silent black screen).
   chmod +x "$HOME/.xinitrc"
 
-  # ensure_block_in_file (see scripts/lib.sh) always converges .bash_profile
-  # on exactly the current scripts/files/kiosk/bash-profile.snippet content,
-  # whatever was there on a previous run — this replaces the old bespoke
-  # sed self-heal logic 
-  # same shared, independently-tested mechanism disable-kiosk.sh's
-  # --remove counterpart uses.
+  # ensure_block_in_file always converges .bash_profile to the current
+  # snippet — same mechanism disable-kiosk.sh's --remove uses.
   ensure_block_in_file "$HOME/.bash_profile" "currency-dashboard-kiosk" "$FILES_DIR/kiosk/bash-profile.snippet"
 
-  # tty1 autologin is what actually reaches .bash_profile/.xinitrc above on
-  # boot — without it, boot stops at a manual login prompt (a real, live
-  # bug: confirmed on an Orange Pi Zero 3 running Armbian, which has no
-  # raspi-config at all, so the old raspi-config-only path below never
-  # configured autologin there). This systemd getty override is
-  # distro-agnostic — it's literally the same mechanism raspi-config's own
-  # boot-behaviour option installs under the hood on Raspberry Pi OS — so
-  # it's applied unconditionally here instead of only for is_raspi_os.
+  # tty1 autologin reaches .bash_profile/.xinitrc — applied unconditionally
+  # since Armbian has no raspi-config (confirmed live: boot stopped at login prompt).
   install_file "$FILES_DIR/systemd/getty-autologin.conf" \
     "/etc/systemd/system/getty@tty1.service.d/autologin.conf"
   sudo systemctl daemon-reload
   log_info "Configured tty1 autologin as $USER (takes effect on next boot, or: sudo systemctl restart getty@tty1)"
 
-  # `.hushlogin` is the standard mechanism (checked by login/PAM's
-  # pam_motd and the shell itself) to suppress the MOTD banner and "Last
-  # login: ..." line on this user's console sessions — otherwise that
-  # text prints to tty1 immediately after autologin, before
-  # .bash_profile's `startx` line even runs, so it's visible on the
-  # kiosk screen for a moment before X takes over.
+  # .hushlogin suppresses the MOTD/last-login text that would otherwise
+  # flash on tty1 before .bash_profile's startx takes over.
   touch "$HOME/.hushlogin"
 
   if is_raspi_os && command -v raspi-config >/dev/null 2>&1; then

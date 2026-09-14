@@ -14,10 +14,8 @@ from logging_setup import security_log
 _admin_failures_lock = threading.Lock()
 _admin_failures = {}  # ip -> [failure timestamps]
 
-# Per-process CSRF secret. The admin panel has no session/cookie (plain
-# HTTP Basic Auth), so the token is a fixed HMAC over a constant string
-# rather than a per-session nonce — valid for the process lifetime, which
-# is fine since its only job is to be unguessable to a cross-origin page.
+# Per-process CSRF secret — no session/cookie here (plain Basic Auth), so
+# a fixed HMAC over a constant string stands in for a per-session nonce.
 CSRF_SECRET = secrets.token_bytes(32)
 
 
@@ -26,11 +24,8 @@ def _port_suffix(port: int, default_port: int) -> str:
 
 
 def redirect_admin_to_https():
-    # The public dashboard (/, /api/data, /static/*) stays on plain HTTP
-    # so the kiosk browser never sees a self-signed-cert warning — only
-    # /admin gets pushed to HTTPS, and only once the listener is actually
-    # confirmed up (config.HTTPS_ENABLED, set for real by app.py's
-    # __main__ once it has bound successfully).
+    # Only /admin redirects to HTTPS, and only once config.HTTPS_ENABLED
+    # confirms the listener actually bound — the kiosk itself stays on HTTP.
     if config.HTTPS_ENABLED and request.path.startswith("/admin") and request.scheme != "https":
         host = request.host.split(":")[0]
         target = f"https://{host}{_port_suffix(config.HTTPS_PORT, 443)}{request.full_path}".rstrip("?")

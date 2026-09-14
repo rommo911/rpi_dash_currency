@@ -1,20 +1,6 @@
 #!/usr/bin/env bash
-# Stage 2 of 3: everything provision-pi.sh used to do besides networking —
-# bloat removal, system update, user account, hostname, timezone/NTP,
-# firewall, SSH hardening, fail2ban (SSH jail), unattended-upgrades,
-# journald log limits, and the optional Wi-Fi emergency-AP fallback. Runs
-# once, right after provision-pi.sh clones the repo and hands off here.
-#
-# Every installed config file below is a real file under scripts/files/,
-# rendered via lib.sh's install_file/ensure_block_in_file — nothing
-# here authors config content inline. See scripts/lib.sh for why.
-#
-# Usage:
-#   ./harden-system.sh                 # interactive (normally invoked by
-#                                       # provision-pi.sh, not run alone)
-#   AUTO_DEFAULT=true ./harden-system.sh   # non-interactive defaults
-#
-# Ends by handing off to deploy-dashboard.sh.
+# Stage 2/3: user/firewall/SSH/fail2ban/journald hardening, then hands
+# off to deploy-dashboard.sh. AUTO_DEFAULT=true for non-interactive.
 
 set -euo pipefail
 
@@ -35,10 +21,8 @@ if [[ $EUID -eq 0 ]]; then
 fi
 
 log_info "1/11 Removing unneeded pre-installed packages"
-# Only relevant on Raspberry Pi OS "Desktop"/"Full" images, which bundle a
-# bunch of apps a dedicated kiosk display never uses. Each is checked with
-# dpkg -s first, so this is a no-op on Lite (none of these are installed
-# there) and never errors on a package name that isn't present.
+# Only relevant on Pi OS Desktop/Full images — dpkg -s first makes this
+# a no-op on Lite, never errors on an absent package.
 BLOAT_PACKAGES=(
   rpi-connect rpi-connect-lite
   wolfram-engine wolframscript
@@ -103,9 +87,8 @@ fi
 # ---------------------------------------------------------------------------
 log_info "6/11 Timezone and NTP"
 sudo timedatectl set-timezone Asia/Damascus
-# set-ntp true both syncs now (via systemd-timesyncd) and persists as an
-# enabled system setting — timesyncd starts automatically on every future
-# boot too, this isn't a one-shot sync.
+# set-ntp true syncs now AND persists — timesyncd auto-starts on every
+# future boot, not a one-shot sync.
 sudo timedatectl set-ntp true
 timedatectl status | grep -E 'Time zone|NTP service|System clock synchronized' || true
 
@@ -131,10 +114,8 @@ sudo ufw --force enable
 
 # ---------------------------------------------------------------------------
 log_info "8/11 Hardening SSH (root login disabled; password auth kept ON as requested)"
-# A drop-in under sshd_config.d/, not a sed edit of the main sshd_config —
-# Debian's default sshd_config already Includes that directory near the
-# top, so these directives win the same way in-place edits used to,
-# without ever touching a line we don't own.
+# Drop-in under sshd_config.d/, not a sed edit — Debian's sshd_config
+# already Includes that directory, so this wins without touching lines we don't own.
 install_file "$FILES_DIR/ssh/currency-dashboard-hardening.conf" \
   /etc/ssh/sshd_config.d/currency-dashboard-hardening.conf
 sudo systemctl restart ssh 2>/dev/null || sudo systemctl restart sshd
@@ -151,14 +132,8 @@ install_file "$FILES_DIR/apt/51unattended-upgrades-security" /etc/apt/apt.conf.d
 install_file "$FILES_DIR/apt/20auto-upgrades" /etc/apt/apt.conf.d/20auto-upgrades
 sudo systemctl enable --now unattended-upgrades
 
-# journald's own MaxLevelStore is what "errors only" actually means at the
-# system level: messages below the given level still reach live watchers
-# (journalctl -f, fail2ban's follow-mode) but are never written to disk —
-# so this cuts disk usage from routine info/debug noise without starving
-# anything that depends on real-time log-following. The dashboard's own
-# security-relevant log line is deliberately emitted at ERROR (see
-# app.py) specifically so it still gets *stored* under this
-# policy and the admin-login fail2ban jail keeps working.
+# MaxLevelStore=err: below-error messages still reach live watchers
+# (journalctl -f, fail2ban) but aren't stored — the security log line is ERROR so it still persists.
 install_file "$FILES_DIR/journald/10-currency-dashboard-limits.conf" \
   /etc/systemd/journald.conf.d/10-currency-dashboard-limits.conf
 sudo systemctl restart systemd-journald

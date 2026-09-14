@@ -1,33 +1,6 @@
 #!/usr/bin/env bash
-# Adds an emergency Wi-Fi Access Point fallback on top of an already
-# working NetworkManager Wi-Fi connection: if the Pi ever loses that
-# network (router down, wrong password after a change, moved somewhere
-# new), wlan0 automatically starts broadcasting its own AP so you can
-# still connect to it directly (e.g. to SSH in and fix things) instead of
-# the Pi going dark on the network. The moment the configured Wi-Fi is
-# reachable again, it drops the AP and reconnects on its own — no manual
-# intervention either direction.
-#
-# Assumes a Wi-Fi client connection already exists in NetworkManager
-# (harden-system.sh's optional step, provision-pi.sh's/harden-system.sh's
-# --auto_default Wi-Fi setup, or 'nmcli device wifi connect'/raspi-config
-# by hand) — this script only layers the AP fallback on top of it, it
-# doesn't configure normal Wi-Fi itself. Safe to re-run any time to
-# change the AP SSID/password or refresh the watchdog service.
-#
-# The watchdog daemon itself and its systemd unit are real files under
-# scripts/files/network/ and scripts/files/systemd/ — this script only
-# renders and installs them (see scripts/lib.sh), it doesn't author their
-# content inline.
-#
-# Usage:
-#   ./wifi-ap-fallback.sh
-#
-# Optional env vars (all skip their interactive prompt when set):
-#   WIFI_CONNECTION   Name of the existing NetworkManager Wi-Fi connection
-#                      to treat as primary
-#   AP_SSID            Emergency AP SSID
-#   AP_PASSWORD        Emergency AP password (must be >= 8 characters)
+# Layers an emergency AP fallback onto an existing NetworkManager Wi-Fi
+# connection — auto-broadcasts if the primary drops, reconnects once it's back.
 
 set -euo pipefail
 
@@ -152,10 +125,8 @@ WIFI_TIMEOUT=$(printf '%q' "$WIFI_TIMEOUT")
 CHECK_INTERVAL=$(printf '%q' "$CHECK_INTERVAL")
 EOF
 sudo chmod 600 "$CONFIG_FILE"
-# This one config file is genuinely install-time-computed data (which
-# device/connection this Pi chose), not static template content, so it's
-# the one exception to going through install_file — matches
-# generate-cert.sh's cert.meta for the same reason.
+# Install-time-computed data (which device/connection was chosen), not
+# static template content — the one exception to install_file, like generate-cert.sh's cert.meta.
 
 # ---------------------------------------------------------------------------
 log_info "Installing the watchdog"

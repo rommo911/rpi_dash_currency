@@ -1,30 +1,6 @@
 #!/usr/bin/env bash
-# Stage 1 of 3: get this Pi online, then get the repo onto it. Nothing
-# else — user/hostname/firewall/hardening/kiosk setup all live in
-# harden-system.sh and deploy-dashboard.sh, which this script hands off
-# to once the repo is present. Kept minimal on purpose: this is the one
-# file you copy onto a fresh SD card before anything else exists there,
-# so it can't depend on any sibling file until it's cloned one.
-#
-# Works both ways:
-#   - Copied alone onto a fresh SD card (no repo present yet) — clones
-#     this repo itself before handing off.
-#   - Run from inside an already-cloned copy of this repo — detects
-#     harden-system.sh sitting next to it and uses that checkout directly
-#     instead of cloning a second copy.
-#
-# Usage (right after first boot, logged in as the default user):
-#   scp scripts/provision-pi.sh pi@<pi-ip>:~
-#   ssh pi@<pi-ip>
-#   chmod +x provision-pi.sh
-#   ./provision-pi.sh                 # interactive
-#   ./provision-pi.sh --auto_default  # fully non-interactive, see README
-#
-# Optional env vars (all have sane defaults):
-#   REPO_URL     Git URL to clone (default: this project's GitHub repo) —
-#                only used when not already running from inside a clone
-#   INSTALL_DIR  Where to clone/install (default: ~/currency-dashboard) —
-#                only used when not already running from inside a clone
+# Stage 1/3: get the Pi online, clone the repo, hand off to harden-system.sh.
+# Usage: scp this, ssh in, ./provision-pi.sh [--auto_default]
 
 set -euo pipefail
 
@@ -88,22 +64,14 @@ netplan_wifi_dev() {
   done
 }
 
-# has_netplan — Armbian/Orange Pi and other Debian-family images without
-# NetworkManager commonly use netplan + systemd-networkd + wpa_supplicant
-# instead (confirmed live on an Orange Pi Zero 3 running Armbian trixie).
+# has_netplan — Armbian/Orange Pi images without NetworkManager use
+# netplan+systemd-networkd+wpa_supplicant instead (confirmed live).
 has_netplan() {
   command -v netplan >/dev/null 2>&1 && [[ -d /etc/netplan ]]
 }
 
-# write_netplan_wifi <ssid> <password-or-empty> — writes ONE dedicated
-# file this provisioning step fully owns (same file dashboard-net-apply.sh
-# manages later at runtime, so the admin panel's Wi-Fi card picks up
-# straight from here with no extra migration step). Claims the device
-# away from any OTHER netplan file that already configures it first (an
-# Armbian board-bring-up file, most likely) via a real YAML parse/rewrite
-# — never sed/regex on YAML — backing up the foreign file once before
-# ever touching it. Requires python3-yaml; installed on the spot if
-# missing (this is provisioning time, apt is expected to work here).
+# write_netplan_wifi <ssid> <password-or-empty> — same file dashboard-
+# net-apply.sh manages later. Claims the device via PyYAML rewrite, never sed.
 write_netplan_wifi() {
   local ssid="$1" password="$2" wifi_dev
   wifi_dev="$(netplan_wifi_dev)"
@@ -177,12 +145,8 @@ PYEOF
 }
 
 connect_wifi_auto() {
-  # Non-interactive path for --auto_default: create (or refresh) a saved
-  # profile for SSID "dashboard" / password "123456789" and try to bring
-  # it up. Saving the profile always succeeds even if that SSID isn't in
-  # range yet — NetworkManager will connect to it the moment it is, and
-  # harden-system.sh's AP-fallback step builds on this same saved profile
-  # regardless of whether it's reachable right now.
+  # --auto_default: saves SSID "dashboard"/"123456789" and tries to
+  # connect — succeeds even out of range; NetworkManager connects once it is.
   if ! command -v nmcli >/dev/null 2>&1; then
     if has_netplan; then
       log_info "nmcli not found but netplan is — configuring default Wi-Fi profile 'dashboard' via netplan (auto mode)"
@@ -215,10 +179,8 @@ connect_wifi_auto() {
     warn "Could not connect to 'dashboard' right now — profile is saved, will connect automatically once that SSID is in range."
 }
 
-# connect_wifi_netplan — interactive no-nmcli path. Skips scanning
-# (would need `iw`, an extra dependency for a rare fallback) and just
-# prompts directly for SSID/password, same as the manual-SSID-entry
-# option the nmcli path already offers when its own scan finds nothing.
+# connect_wifi_netplan — interactive no-nmcli path. Skips scanning (needs
+# `iw`, an extra dep for a rare fallback), prompts directly instead.
 connect_wifi_netplan() {
   local wifi_dev
   wifi_dev="$(netplan_wifi_dev)"
@@ -258,13 +220,8 @@ connect_wifi() {
     return 1
   fi
 
-  # On a fresh SD card the radio can be soft-blocked (rfkill) or the
-  # NetworkManager wifi radio can be off — either one makes a scan return
-  # nothing with no error at all, which looks identical to "no networks
-  # nearby." Confirmed in practice: a first run's scan came back empty,
-  # and only running raspi-config's own Wi-Fi setup (which unblocks/turns
-  # this on as a side effect) fixed it. Unconditionally unblock/enable
-  # before every scan — harmless no-ops if already fine.
+  # A fresh SD card can have the radio soft-blocked/off, making a scan
+  # return empty with no error (confirmed live) — unblock/enable before every scan.
   sudo rfkill unblock wifi 2>/dev/null || true
   sudo nmcli radio wifi on 2>/dev/null || true
   sleep 1
@@ -279,12 +236,8 @@ connect_wifi() {
   sudo nmcli device wifi rescan ifname "$WIFI_DEV" >/dev/null 2>&1 || true
   sleep 2
 
-  # Numbered list, deduplicated by SSID (multiple APs/bands for the same
-  # network show up as separate scan results otherwise). --escape no keeps
-  # the terse output plain (no backslash-escaping of ':' inside field
-  # values) so it's simple to split on ':' — the trade-off is an SSID that
-  # itself contains a literal ':' would parse wrong, rare enough for a
-  # provisioning prompt not to matter.
+  # Deduplicated by SSID (multi-band APs show up as separate results).
+  # --escape no keeps output splittable on ':' — an SSID with a literal ':' would misparse, rare.
   WIFI_SCAN_NAMES=()
   WIFI_SCAN_ROWS=()
   while IFS=: read -r ssid signal security; do
@@ -412,12 +365,8 @@ fi
 
 # ---------------------------------------------------------------------------
 log_info "2/2 Getting the dashboard repo onto this Pi"
-# Untrack data.json/config.py first if this checkout predates them being
-# gitignored — a plain `git pull`/reset would otherwise refuse or (worse,
-# for reset --hard) silently delete a live-modified copy of either file.
-# See scripts/auto-update.sh for the full explanation; harden-system.sh's
-# handoff to deploy-dashboard.sh repeats this same update anyway, so
-# failures here are non-fatal.
+# Untrack data.json/config.py first (pre-gitignore checkouts) so reset
+# --hard can't delete a live copy — see auto-update.sh; non-fatal here since deploy-dashboard.sh repeats it.
 if [[ "$RUNNING_FROM_CLONE" == true ]]; then
   log_info "Already running from a clone at $REPO_ROOT — using it directly"
   git -C "$REPO_ROOT" rm --cached -q data.json config.py 2>/dev/null || true

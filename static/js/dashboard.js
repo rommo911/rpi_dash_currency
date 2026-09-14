@@ -6,14 +6,8 @@ let lastCount = 0;
 let lastHostInfo = { hostname: '', ip: '' };
 let lastPrices = {}; // code -> price, for the update-flash effect
 
-// code -> card element, kept across renders. refresh() used to tear down
-// and rebuild every card from scratch on every poll that had ANY price
-// change, even for the 4 other cards whose price didn't move — full
-// innerHTML replace, fresh <img> decode, full grid reflow, all of it. On
-// the Orange Pi Zero 3's weak GPU that's a visible stutter exactly when a
-// price updates, regardless of how cheap the CSS animation itself is.
-// Keeping these nodes around and only touching the ones that actually
-// changed is the real fix.
+// code -> card element, kept across renders instead of rebuilding all
+// cards from scratch on every poll (was a visible stutter on weak GPUs).
 const cardEls = new Map();
 let currentValueSize = 0; // px — last computed by layoutGrid(), reused by fitValueText()
 
@@ -31,10 +25,7 @@ function showHostInfo() {
   setTimeout(() => el.classList.remove('show'), 10000);
 }
 
-// Show the hostname/IP once — 10s, starting 2 minutes after page load —
-// not a repeating cycle. Stays hidden after that until the kiosk session
-// restarts (service restart or reboot reloads the page, resetting
-// hostInfoShown).
+// Shows hostname/IP once for 10s, 2min after load — not a repeating cycle.
 setTimeout(showHostInfo, 120000);
 
 function fmt(n) {
@@ -43,9 +34,7 @@ function fmt(n) {
 }
 
 function esc(s) {
-  // Full escaper (incl. quotes) — safe for both text and attribute
-  // contexts, unlike a textContent/innerHTML round-trip which leaves
-  // quote characters untouched.
+  // Escapes quotes too — safe for attribute contexts, unlike textContent.
   return String(s ?? '')
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
@@ -60,26 +49,20 @@ function safeFlagSrc(src) {
   return typeof src === 'string' && src.startsWith('/static/flags/') ? esc(src) : '';
 }
 
-// "Last updated" label only — not free text the admin typed, so (unlike
-// currency names/dashboard title, which are never auto-translated by
-// design) this follows admin_language like the /admin UI chrome does.
+// Fixed UI label (unlike currency names/title), so it follows admin_language.
 const LAST_UPDATED_LABEL = { en: 'Last updated', ar: 'آخر تحديث' };
 
 function pad2(n) { return String(n).padStart(2, '0'); }
 
-// Fixed HH:MM:SS DD/MM/YYYY (24h, zero-padded) regardless of browser/OS
-// locale — toLocaleString() output varies unpredictably by locale, which
-// is exactly what a wall-mounted kiosk display shouldn't have.
+// Fixed HH:MM:SS DD/MM/YYYY — not toLocaleString(), which varies by locale.
 function formatDateTime(dt) {
   const time = `${pad2(dt.getHours())}:${pad2(dt.getMinutes())}:${pad2(dt.getSeconds())}`;
   const date = `${pad2(dt.getDate())}/${pad2(dt.getMonth() + 1)}/${dt.getFullYear()}`;
   return `${time} ${date}`;
 }
 
-// Picks the column/row split (out of every split that fits n cards) whose
-// resulting cell is the largest — so 2 cards fill the screen as two big
-// tiles, 3 as three, 7 as a balanced 4x2ish block, and so on, instead of
-// a fixed column count leaving unused space.
+// Picks the cols/rows split with the largest resulting cell, not a fixed
+// column count — so N cards always fill the screen well.
 function bestGridSplit(n, w, h, gapX, gapY) {
   let best = null;
   for (let cols = 1; cols <= n; cols++) {
@@ -95,11 +78,8 @@ function bestGridSplit(n, w, h, gapX, gapY) {
   return best || { cols: 1, rows: 1, cellSize: Math.min(w, h) };
 }
 
-// fitValueText — keep one formatted price on one line without ellipsis.
-// Longer values get a smaller font, short values keep the largest
-// possible size. Reads currentValueSize as set by the last layoutGrid()
-// call rather than recomputing grid geometry itself, so a single card's
-// price update can refit just that card without re-measuring the rest.
+// fitValueText — sizes one price to fit on one line. Uses currentValueSize
+// from the last layoutGrid() call rather than recomputing grid geometry.
 function fitValueText(valueEl) {
   const textLength = Math.max(1, valueEl.textContent.trim().length);
   const width = valueEl.getBoundingClientRect().width;
@@ -107,13 +87,8 @@ function fitValueText(valueEl) {
   valueEl.style.fontSize = Math.min(currentValueSize, fittedSize) + 'px';
 }
 
-// layoutGrid — sizes the grid template and every per-card CSS variable
-// from scratch, then refits every card's price text against the new
-// sizing. Only needed when the number of displayed cards changes or the
-// viewport resizes — NOT on every poll. Forcing this (and its per-card
-// getBoundingClientRect() reflow) on every single 5s tick regardless of
-// whether anything actually changed was the main source of stutter on
-// weak boards; see refresh()'s structuralChange check.
+// layoutGrid — full grid + card resize. Only on card-count change or
+// resize, not every poll — see refresh()'s structuralChange check.
 function layoutGrid() {
   const gridWrap = document.getElementById('grid-wrap');
   const grid = gridWrap.querySelector('.grid');
@@ -125,9 +100,8 @@ function layoutGrid() {
   grid.style.gridTemplateColumns = `repeat(${cols}, 1fr)`;
   grid.style.gridTemplateRows = `repeat(${rows}, 1fr)`;
 
-  // Budget the cell's actual pixels (padding + gaps first) instead of
-  // guessing fixed fractions of cellSize — that's what let the price
-  // digits get clipped once cells got bigger/smaller than expected.
+  // Budgets real pixels (padding/gaps first) — guessing fractions of
+  // cellSize let digits get clipped at some sizes.
   const compactLayout = lastCount <= 2;
   const cardPad = cellSize * (compactLayout ? 0.045 : 0.075);
   const cardGap = cellSize * (compactLayout ? 0.025 : 0.055);
@@ -135,9 +109,8 @@ function layoutGrid() {
   grid.style.setProperty('--card-gap', cardGap + 'px');
 
   const available = Math.max(20, cellSize - cardPad * 2 - cardGap * 3);
-  // Price is the star of the card: bigger than the code, which is
-  // bigger than the currency name. Icon gets the single largest share
-  // since it's the most recognizable element from across a room.
+  // Price > code > name in size; icon gets the largest share (recognizable
+  // from across a room).
   const iconScale = 0.85;
   const iconHeight = available * (compactLayout ? 0.36 : 0.30) * iconScale;
   grid.style.setProperty('--icon-h', compactLayout ? iconHeight + 'px' : 'auto');
@@ -152,10 +125,8 @@ function layoutGrid() {
   grid.querySelectorAll('.value').forEach(fitValueText);
 }
 
-// buildCard — the one-time DOM construction for a currency never shown
-// before. esc()/safeFlagSrc() are required here since this goes through
-// innerHTML (see CLAUDE.md); in-place updates in refresh() below use
-// textContent instead, which needs no escaping at all.
+// buildCard — one-time DOM build for a new currency, via innerHTML so
+// esc()/safeFlagSrc() are required (see CLAUDE.md).
 function buildCard(c) {
   const card = document.createElement('div');
   card.className = 'card';
@@ -177,10 +148,8 @@ async function refresh() {
     const d = await res.json();
 
     if (d.app_version && d.app_version !== PAGE_LOAD_VERSION) {
-      // A deploy/auto-update swapped in new app code (e.g. changed JS in
-      // this very file) after this tab's page was loaded — restarting
-      // the systemd service does not touch an already-open kiosk tab, so
-      // without this the kiosk would keep running stale JS indefinitely.
+      // A redeploy swapped in new code after this tab loaded — a service
+      // restart alone wouldn't touch an already-open kiosk tab.
       location.reload();
       return;
     }
@@ -195,9 +164,7 @@ async function refresh() {
     if (d.color_palette) {
       document.documentElement.dataset.palette = d.color_palette;
     }
-    // Per-effect toggles (admin panel's "Visual effects" checkboxes) — kept
-    // in sync live, same as color_palette, so a change shows up on the
-    // kiosk within one poll instead of needing a reload.
+    // Effect toggles, kept live in sync same as color_palette.
     document.body.classList.toggle('fx-glass', !!d.fx_glass);
     document.body.classList.toggle('fx-scan', !!d.fx_scan);
     document.body.classList.toggle('fx-flash', !!d.fx_flash);
@@ -210,10 +177,8 @@ async function refresh() {
     // The screen is sized for a handful of big tiles, not a scrolling
     // list — cap what's shown even if more are enabled in the panel.
     const shown = (d.currencies || []).slice(0, MAX_DISPLAYED_CURRENCIES);
-    // Only a change in WHICH currencies are shown (enabled/disabled/added/
-    // removed, or the very first render) needs the full grid re-layout —
-    // a plain price tick on an already-shown currency doesn't change
-    // geometry at all, just that one card's text.
+    // Only a change in WHICH currencies show needs a full re-layout —
+    // a price tick alone doesn't change geometry.
     const newCodes = new Set(shown.map(c => c.code));
     const structuralChange = newCodes.size !== cardEls.size || [...newCodes].some(code => !cardEls.has(code));
     lastCount = shown.length;
@@ -232,9 +197,7 @@ async function refresh() {
 
       const changedValueEls = [];
       shown.forEach(c => {
-        // lastPrices[c.code] === undefined means "first time we've seen
-        // this currency" (page just loaded, or it was just enabled) —
-        // never flash that, only an actual change from a known value.
+        // undefined = first time seeing this currency — never flash that.
         const priceChanged = lastPrices[c.code] !== undefined && lastPrices[c.code] !== c.price;
         let card = cardEls.get(c.code);
         if (!card) {
@@ -261,22 +224,16 @@ async function refresh() {
           }
         }
         if (priceChanged && d.fx_flash) {
-          // Re-triggering a CSS animation on a node that already has the
-          // class requires an actual remove -> reflow -> re-add, not just
-          // leaving the class in place (which the browser won't replay).
+          // Replaying a CSS animation needs remove -> reflow -> re-add.
           card.classList.remove('flash');
           void card.offsetWidth;
           card.classList.add('flash');
-          // The card is a persistent node now (not rebuilt every poll),
-          // so 'flash' must come back off once the animation finishes —
-          // dashboard.css's fx-flash rule sets overflow:visible for the
-          // duration (needed so the glow pseudo-element can bleed past
-          // the card's edge), which must not stay applied forever.
+          // Must come back off (card is persistent now) — the class also
+          // carries overflow:visible in CSS, which can't stay on forever.
           card.addEventListener('animationend', () => card.classList.remove('flash'), { once: true });
         }
-        // appendChild on an existing child MOVES it — cheap no-op when
-        // already in the right spot, and keeps DOM order matching
-        // `shown`'s order without a separate reordering pass.
+        // appendChild on an existing child MOVES it — keeps DOM order in
+        // sync with `shown` with no separate reorder pass.
         grid.appendChild(card);
       });
 

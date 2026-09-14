@@ -1,8 +1,5 @@
-"""System-level admin routes: Wi-Fi, hotspot fallback, updates, reboot.
-Split from routes/admin.py since these carry a different risk profile
-(can drop the admin's own connection, restart the board) than plain
-currency/price edits.
-"""
+"""System-level admin routes: Wi-Fi, hotspot fallback, updates, reboot —
+split from admin.py since these can drop the connection or restart the box."""
 import os
 import subprocess
 
@@ -30,11 +27,8 @@ def admin_system_page():
     net_config = load_net_config()
     net_status = read_net_status()
     wifi_slots = (net_config.get("wifi") or [])[:MAX_WIFI_SLOTS]
-    # If no Wi-Fi profile has ever been saved through this panel, show
-    # whatever the device is ALREADY configured with (e.g. from
-    # provision-pi.sh) instead of blank fields — SSID only, since a saved
-    # WPA2 secret can't be read back without privilege this app doesn't
-    # have. Display only: nothing is written until the admin hits Save.
+    # No saved profile yet? Prefill SSID only from whatever's already
+    # configured (e.g. provision-pi.sh) — display only, password unreadable.
     wifi_prefilled = False
     if not wifi_slots:
         known = (net_status.get("known_ssids") or [])[:MAX_WIFI_SLOTS]
@@ -64,9 +58,7 @@ def admin_system_page():
 
 @app.route("/admin/toggle-auto-update", methods=["POST"])
 def admin_toggle_auto_update():
-    # Auto-update enabled/disabled is a flag FILE, not a data.json field —
-    # scripts/auto-update.sh checks for this file's existence directly.
-    # Auto-submits on checkbox change, no separate save button.
+    # Flag file, not a data.json field — auto-update.sh checks it directly.
     unauthorized = require_admin_auth()
     if unauthorized:
         return unauthorized
@@ -94,12 +86,8 @@ def admin_check_update_now():
     if not check_csrf():
         return redirect(url_for("admin_system_page", error=t["err_csrf"]))
 
-    # Touching this flag makes auto-update.sh check unconditionally on its
-    # next run and delete the flag afterward. Starting the updater service
-    # directly makes that "next run" happen now instead of waiting for the
-    # timer — fire-and-forget (Popen): if an update is actually applied,
-    # the updater restarts this very service partway through, so nothing
-    # here can safely wait on it.
+    # Fire-and-forget: an applied update restarts this very service
+    # mid-request, so nothing here can safely wait on the result.
     open(AUTO_UPDATE_CHECK_NOW_FLAG, "a", encoding="utf-8").close()
     try:
         subprocess.Popen(
@@ -114,9 +102,7 @@ def admin_check_update_now():
 
 @app.route("/admin/wifi/save", methods=["POST"])
 def admin_wifi_save():
-    # No sudo/subprocess here: this only writes desired state to
-    # net_config.json. The root-run dashboard-net-apply daemon polls it
-    # and does the real nmcli work — see config.py's NET_CONFIG_FILE comment.
+    # No sudo here — just writes desired state; the root daemon applies it.
     unauthorized = require_admin_auth()
     if unauthorized:
         return unauthorized
@@ -126,11 +112,8 @@ def admin_wifi_save():
         return redirect(url_for("admin_system_page", error=t["err_csrf"]))
 
     cfg = load_net_config()
-    # Password fields are never pre-filled (same reason ADMIN_PASSWORD has
-    # no edit UI: don't echo secrets back into HTML), so a blank
-    # submission for an SSID that already has a saved password means
-    # "leave it unchanged" — keyed by SSID so reordering slots doesn't
-    # lose a password.
+    # Password fields are never pre-filled, so blank = "keep saved
+    # password" — keyed by SSID so reordering slots doesn't lose it.
     old_by_ssid = {w.get("ssid"): w.get("password", "") for w in cfg.get("wifi", []) if w.get("ssid")}
 
     slots = []
@@ -144,10 +127,8 @@ def admin_wifi_save():
             return redirect(url_for("admin_system_page", error=t["err_wifi_password_len"].format(
                 field=field_label, min=MIN_WIFI_PASS_LEN, max=MAX_WIFI_PASS_LEN)))
         if ssid:
-            # No open networks, ever. A blank field only means "keep what
-            # is stored", and only resolves for an SSID that is unchanged
-            # AND already has a password on file — renaming/adding a
-            # network always demands its own password.
+            # No open networks: blank only resolves for an unchanged SSID
+            # with a saved password — a new/renamed SSID needs one typed.
             if not password:
                 password = old_by_ssid.get(ssid) or ""
             if not password:
@@ -179,9 +160,8 @@ def admin_ap_save():
 
     cfg = load_net_config()
     old_ap = cfg.get("ap_fallback") or {}
-    # Same never-pre-filled rule as the Wi-Fi client slots: blank means
-    # "keep saved password", only while the SSID is unchanged. An open AP
-    # is never written — WPA2-PSK always needs a key.
+    # Same rule as the Wi-Fi client slots: blank keeps the saved password
+    # only for an unchanged SSID; open APs are never written.
     if not password:
         if ssid == old_ap.get("ssid"):
             password = old_ap.get("password") or ""
@@ -223,9 +203,6 @@ def admin_reboot():
     if not check_csrf():
         return redirect(url_for("admin_system_page", error=t["err_csrf"]))
 
-    # Touch-file idiom, same as AUTO_UPDATE_CHECK_NOW_FLAG: the root-run
-    # dashboard-net-apply daemon checks for this file every ~5s and, if
-    # present, removes it and calls `systemctl reboot` itself. Nothing
-    # here runs as root or calls systemctl directly.
+    # Touch-file idiom: the root daemon polls for this and reboots itself.
     open(REBOOT_REQUEST_FLAG, "a", encoding="utf-8").close()
     return redirect(url_for("admin_system_page", msg=t["restart_started"]))

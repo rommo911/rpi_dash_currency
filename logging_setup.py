@@ -1,12 +1,5 @@
-"""Logging config: errors only, everywhere, on purpose — matches the
-system-wide journald policy (see harden-system.sh). Routine request
-logging is off entirely; only real problems get logged, in two places:
-journald (via the root logger) and a dedicated rotating file.
-
-security_log uses .error() (not .warning()) deliberately: journald's
-MaxLevelStore=err drops anything lower from being stored at all, and the
-fail2ban jail depends on this exact message reaching the journal.
-"""
+"""Errors-only logging to journald + a rotating file. security_log uses
+.error() since journald's MaxLevelStore=err drops anything lower."""
 import logging
 import os
 from logging.handlers import TimedRotatingFileHandler

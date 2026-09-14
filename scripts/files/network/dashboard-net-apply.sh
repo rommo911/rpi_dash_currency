@@ -1,42 +1,6 @@
 #!/bin/bash
-# Installed at /usr/local/sbin/dashboard-net-apply by deploy-dashboard.sh.
-# Root-run polling daemon (systemd unit has no User= line, same as
-# wifi-ap-fallback.service) that is the ONLY thing on this box with
-# privilege to change Wi-Fi/reboot as a result of admin-panel input. The
-# Flask app itself never runs anything as root and never holds a sudo
-# grant for this feature — it only ever writes plain files into its own
-# workspace (/home/kiosk/currency-dashboard/net_config.json,
-# /home/kiosk/currency-dashboard/reboot.request)
-# describing DESIRED state; this daemon polls those files and reconciles
-# real system state to match, then publishes OBSERVED state (never
-# secrets) to /run/dashboard-net/status.json for the app to read back.
-#
-# Two Wi-Fi backends, auto-detected every tick (never assumed):
-#   - "nmcli"   Raspberry Pi OS Bookworm+ and any image with NetworkManager
-#               installed. Same nmcli calls this daemon has always used.
-#   - "netplan" Armbian/Orange Pi images (and any Debian-family image)
-#               that have no NetworkManager but DO use netplan +
-#               systemd-networkd + wpa_supplicant — confirmed live on a
-#               real Orange Pi Zero 3 (Armbian trixie) where `nmcli` isn't
-#               installed at all but `netplan`/`wpa_supplicant` are. This
-#               backend writes a dedicated netplan YAML file for the
-#               client Wi-Fi slots and drives hostapd (own transient
-#               `systemd-run` unit, never /etc/hostapd/hostapd.conf or
-#               the shared hostapd.service) + systemd-networkd's own
-#               built-in DHCP-server role for the AP fallback, since
-#               netplan on this system has no working Wi-Fi-AP-mode
-#               renderer (`netplan info` reports no such feature) —
-#               nmcli's builtin AP-mode trick has no equivalent here, so
-#               this reimplements the same emergency-AP behavior
-#               wifi-ap-fallback.sh/its watchdog provide on the nmcli
-#               side. No dnsmasq: systemd-networkd is already running
-#               and proven on this box, one less daemon to misconfigure.
-#   - "none"    Neither present — every network action is skipped (reboot
-#               handling still works, it has nothing to do with Wi-Fi).
-#
-# Not `set -e`: runs forever in a polling loop, and a single failed
-# nmcli/netplan/systemctl call must be logged and retried next tick, not
-# kill the daemon — same reasoning as wifi-ap-fallback-watchdog.sh.
+# Root-run daemon (no User=) that applies admin-panel Wi-Fi/reboot input;
+# Flask only writes desired-state files. Backend: nmcli, else netplan (Armbian), else none.
 set -u
 
 INSTALL_DIR="/home/kiosk/currency-dashboard"
@@ -48,26 +12,15 @@ AP_FALLBACK_SCRIPT="$INSTALL_DIR/scripts/wifi-ap-fallback.sh"
 
 STATUS_DIR="/run/dashboard-net"
 STATUS_FILE="$STATUS_DIR/status.json"
-# Marker only — content is never read, just its mtime vs. NET_CONFIG_FILE's
-# (see the main loop). Named applied.sha256 in an earlier version that
-# actually stored a hash there; kept the same path on purpose so an
-# upgraded box doesn't leave a stale copy of the old file behind.
+# Marker only now (mtime vs NET_CONFIG_FILE, see main loop); name kept as-is.
 APPLIED_HASH_FILE="$STATUS_DIR/applied.sha256"
 APPLIED_SSIDS_FILE="$STATUS_DIR/applied_ssids"
 AP_STARTED_FILE="$STATUS_DIR/ap_started_at"
 DISCONNECTED_SINCE_FILE="$STATUS_DIR/disconnected_since"
 AP_CLIENT_FREE_SINCE_FILE="$STATUS_DIR/ap_client_free_since"
 
-# write_status_netplan() used to recompute both of these from scratch on
-# EVERY CHECK_INTERVAL tick (5s, forever) regardless of whether anything
-# had changed: known_ssids meant spawning a full python3+PyYAML interpreter
-# to re-read every /etc/netplan/*.yaml file off disk, and ap_enabled meant
-# a second python3 spawn just to re-read net_config.json. Neither can
-# change between one net_config.json edit and the next, so both are cached
-# here and only refreshed by refresh_status_cache_netplan(), called from
-# the same "config changed" branch that already gates reconcile_wifi —
-# see the main loop below. Defaults cover the (rare) tick where
-# NET_CONFIG_FILE doesn't exist yet, before that branch has ever run.
+# Cached to avoid two python3 spawns per tick; refreshed only on config
+# change (refresh_status_cache_netplan). Defaults until that first runs.
 CACHED_KNOWN_SSIDS_JSON="[]"
 CACHED_AP_ENABLED="false"
 
@@ -76,54 +29,24 @@ AP_IFACE_IP="192.168.50.1"
 AP_IFACE_CIDR="192.168.50.1/24"
 AP_HOSTAPD_CONF="/run/dashboard-ap-hostapd.conf"
 AP_HOSTAPD_UNIT="dashboard-ap-hostapd"
-# MUST sort lexically BEFORE netplan's generated
-# /run/systemd/network/10-netplan-<dev>.network: systemd-networkd applies
-# only the FIRST matching .network file, sorted by FILENAME across all of
-# /etc, /run and /usr/lib — /etc only wins over /run for an IDENTICAL
-# filename, which this is not. The old 90- name therefore always lost to
-# netplan's client config, so the AP interface silently kept DHCP=ipv4
-# (client) and never got 192.168.50.1 or DHCPServer=yes — hostapd came up
-# and clients associated fine, then hung forever waiting for a DHCP offer
-# nobody was sending. Confirmed live. Don't renumber this above 10.
+# Must sort lexically before netplan's 10-netplan-*.network (systemd-
+# networkd applies only the first match) — confirmed live. Don't renumber above 10.
 AP_NETWORKD_FILE="/etc/systemd/network/05-dashboard-ap.network"
 # Pre-fix name, still removed on every stop so an upgraded box can't keep
 # a stale copy around.
 AP_NETWORKD_FILE_LEGACY="/etc/systemd/network/90-dashboard-ap.network"
 
-# Minimum time the primary Wi-Fi must be continuously unreachable before
-# the emergency AP is started at all. During this grace window nothing on
-# the interface is touched — wpa_supplicant/networkd already retry on
-# their own, and forcing a reconnect attempt (which tears down and
-# re-applies the interface, see try_reconnect_netplan) on every single
-# CHECK_INTERVAL tick would itself manufacture disconnect/reconnect churn
-# out of what might just be a one-tick blip.
+# How long primary Wi-Fi must be down before the AP starts at all.
 AP_FALLBACK_DELAY_SECONDS="${AP_FALLBACK_DELAY_SECONDS:-180}"
 
-# Minimum time the AP must have NO associated client before trying the
-# primary Wi-Fi again — counted from the moment the last client leaves,
-# not from when the AP started. A connected client means someone is
-# actively using the emergency AP (to fix Wi-Fi or change the SSID from
-# the admin panel); pulling the radio out from under them mid-fix would
-# defeat the entire point of the fallback. This also still guards the
-# original problem: without SOME dwell, reconcile_ap_netplan (called
-# every CHECK_INTERVAL tick) tore the AP down to retry the primary
-# connection on EVERY tick — confirmed live, the AP was only up for the
-# ~5s between ticks and down for the whole ~25s WIFI_RECONNECT_TIMEOUT
-# retry window on every cycle, so it never stayed up long enough for a
-# phone/laptop to even finish a scan before it vanished again.
+# How long the AP must be client-free before retrying primary Wi-Fi —
+# timer resets to 0 whenever a client is connected (see reconcile_ap_active_netplan).
 AP_MIN_DWELL_SECONDS="${AP_MIN_DWELL_SECONDS:-300}"
 
 CHECK_INTERVAL="${CHECK_INTERVAL:-5}"
 
-# Debug logging is OFF by default (an SD card is not where you want a
-# verbose daemon writing forever) — touch DEBUG_LOG_FLAG on the device to
-# turn it on, remove it to turn it off again, no service restart needed
-# since log() checks for it fresh on every call. `logger` (journald) still
-# always gets every message regardless of this flag, but journald's own
-# MaxLevelStore=err policy (see harden-system.sh) silently drops anything
-# below error severity system-wide — which is everything this daemon logs
-# — so in practice the journal alone never has this daemon's history. This
-# file is the only reliable way to pull what the daemon actually did.
+# Off by default (SD wear) — touch DEBUG_LOG_FLAG to enable, no restart
+# needed. journald drops below-error logs system-wide, so this file is the only history.
 DEBUG_LOG_FLAG="/etc/dashboard-net-apply-debug"
 DEBUG_LOG_FILE="/var/log/dashboard-net-apply-debug.log"
 DEBUG_LOG_MAX_BYTES=5242880
@@ -155,10 +78,8 @@ else
   }
 fi
 
-# detect_backend — nmcli preferred whenever present (matches every
-# existing script in this repo, which all assume NetworkManager on
-# Raspberry Pi OS); netplan only considered when nmcli is genuinely
-# absent AND this looks like a real netplan-managed system.
+# detect_backend — nmcli preferred whenever present; netplan only when
+# nmcli is genuinely absent and this looks netplan-managed.
 detect_backend() {
   if command -v nmcli >/dev/null 2>&1; then
     echo "nmcli"
@@ -169,9 +90,8 @@ detect_backend() {
   fi
 }
 
-# detect_wifi_dev — backend-specific: nmcli already knows device roles;
-# without it, a wireless device is identified the portable, tool-free way
-# (every wifi netdev has a "wireless" subdir under /sys/class/net/<dev>).
+# detect_wifi_dev — nmcli knows device roles directly; otherwise a
+# wifi netdev is any with a "wireless" subdir under /sys/class/net.
 detect_wifi_dev() {
   local backend="$1"
   if [[ "$backend" == "nmcli" ]]; then
@@ -186,9 +106,8 @@ detect_wifi_dev() {
   fi
 }
 
-# reconcile_reboot — checked every tick, first, independent of any Wi-Fi
-# backend even being present: a reboot request has nothing to do with
-# networking.
+# reconcile_reboot — checked first every tick, independent of any Wi-Fi
+# backend.
 reconcile_reboot() {
   if [[ -f "$REBOOT_FLAG" ]]; then
     rm -f "$REBOOT_FLAG"
@@ -197,9 +116,8 @@ reconcile_reboot() {
   fi
 }
 
-# Emits NUL-separated "ssid\0password\0" pairs for up to 2 configured Wi-Fi
-# slots. NUL-separated (not newline/pipe-delimited) so an SSID or password
-# containing any other byte still round-trips correctly into bash.
+# NUL-separated "ssid\0password\0" pairs — not newline/pipe-delimited,
+# so any byte in an SSID/password round-trips correctly.
 read_wifi_slots() {
   python3 - "$NET_CONFIG_FILE" <<'PYEOF'
 import json, sys
@@ -237,12 +155,8 @@ json_string() {
   python3 -c 'import json,sys; print(json.dumps(sys.argv[1]))' "$1"
 }
 
-# JSON-encodes one SSID name per line of stdin into a JSON array — used to
-# report currently-configured Wi-Fi networks to the admin panel (see
-# known_ssids in write_status_*()) so it can show/prefill what's ALREADY
-# configured on this box (e.g. provision-pi.sh's initial setup, or an
-# Armbian image's own board-bring-up netplan file) instead of blank
-# fields the first time net_config.json doesn't exist yet.
+# JSON-encodes SSID names (one per stdin line) so the admin panel can
+# prefill already-configured networks instead of blank fields.
 json_string_array() {
   python3 -c 'import json,sys; print(json.dumps([l for l in sys.stdin.read().splitlines() if l]))'
 }
@@ -256,14 +170,8 @@ reconcile_wifi() {
   fi
 }
 
-# reconcile_wifi_nmcli — idempotent delete-then-recreate per slot (same
-# shape as provision-pi.sh's connect_wifi()/connect_wifi_auto()), ranked
-# by list order via connection.autoconnect-priority so NetworkManager
-# prefers slot 1 and falls back to slot 2 as it comes into range. Any
-# profile this daemon previously applied but that's no longer in the
-# current config is deleted — tracked in a tmpfs file so a reboot (which
-# wipes tmpfs) always starts from "nothing applied yet" and simply
-# re-applies the current config fresh on its first tick.
+# reconcile_wifi_nmcli — idempotent delete-then-recreate per slot, ranked
+# via connection.autoconnect-priority. Stale profiles tracked in a tmpfs file.
 reconcile_wifi_nmcli() {
   local wifi_dev="$1"
   local -a fields=()
@@ -314,26 +222,8 @@ reconcile_wifi_nmcli() {
   printf '%s\n' "${new_ssids[@]}" > "$APPLIED_SSIDS_FILE"
 }
 
-# reconcile_wifi_netplan — writes ONE dedicated file
-# ($NETPLAN_FILE) this daemon fully owns (always render-and-overwrite,
-# same "no partial patch" idiom as lib.sh's install_file — nothing to
-# check-before-writing). Up to 2 access-points, no per-AP priority key in
-# netplan's schema, so ranking a preferred network isn't possible here
-# the way nmcli's autoconnect-priority does it — wpa_supplicant itself
-# still prefers whichever configured network has the strongest/only
-# signal present, which is an acceptable behavior gap for a 2-slot
-# fallback list, not a bug to chase further.
-#
-# Before first use, claims exclusive ownership of this Wi-Fi device: any
-# OTHER /etc/netplan/*.yaml file that also configures this device (e.g.
-# an Armbian board-bring-up file with the SSID set at image-build time)
-# would otherwise silently deep-merge with ours and leave stale/foreign
-# networks active. That device key is removed from the foreign file
-# (backed up once, `.dashboard-orig.bak`, before ever being touched) via
-# a real YAML parse/rewrite (PyYAML — already a transitive dependency of
-# python3-netplan, confirmed present) rather than text-editing YAML by
-# hand, since indentation-sensitive formats are exactly where a
-# sed/regex edit silently produces a subtly-broken file.
+# reconcile_wifi_netplan — always render-and-overwrites $NETPLAN_FILE.
+# First claims exclusive device ownership from any other netplan file (backed up, PyYAML rewrite).
 reconcile_wifi_netplan() {
   local wifi_dev="$1"
   local -a fields=()
@@ -376,13 +266,8 @@ PYEOF
     new_ssids+=("${fields[i]}")
   done
 
-  # Fed the NUL-separated fields via a process-substitution FILE ARGUMENT
-  # (not stdin — `python3 -` already consumes stdin as its own script
-  # source when combined with the heredoc below, so a `< <(...)` stdin
-  # redirect here is silently clobbered by the heredoc's own stdin
-  # redirect and the script would read EOF instead of any field data;
-  # confirmed live, this was producing an always-empty access-points map).
-  # Passing it as argv[3] instead avoids the fd0 collision entirely.
+  # Fields passed as argv[3] (file path), not stdin — the heredoc below
+  # already owns stdin, so a `< <(...)` redirect here was silently clobbered (confirmed live).
   python3 - "$wifi_dev" "$NETPLAN_FILE" <(read_wifi_slots) <<'PYEOF'
 import sys
 import yaml
@@ -424,16 +309,8 @@ PYEOF
   printf '%s\n' "${new_ssids[@]}" > "$APPLIED_SSIDS_FILE"
 }
 
-# reconcile_ap_fallback_nmcli — never reimplements wifi-ap-fallback.sh's
-# nmcli logic; either invokes it as-is (dropping from root to RUN_USER,
-# since that script refuses to run as root itself and does its own
-# internal sudo for the parts that need it — no password needed, the
-# caller here already has full privilege) or disables the service it
-# installs. Hash-gated (called only when net_config.json changes) because
-# the CONTINUOUS "is primary Wi-Fi actually down right now" toggling is
-# already handled by wifi-ap-fallback-watchdog.sh's own independent
-# 15s-interval loop — this function only ever installs/updates/disables
-# that whole subsystem, never toggles the AP itself.
+# reconcile_ap_fallback_nmcli — invokes wifi-ap-fallback.sh as RUN_USER
+# (never reimplements it); the watchdog script owns the continuous AP toggle.
 reconcile_ap_fallback_nmcli() {
   local wifi_dev="$1"
   local -a fields=()
@@ -477,56 +354,30 @@ reconcile_ap_fallback_nmcli() {
   fi
 }
 
-# --- netplan-backend AP fallback: hostapd for the radio, systemd-networkd's
-# OWN built-in DHCP server for leases (no dnsmasq — one less daemon, one
-# less place to misconfigure, and it's infrastructure already running and
-# proven on this box). hostapd runs as our own transient `systemd-run`
-# unit (never the shared hostapd.service/its default config). Unlike the
-# nmcli path above, this is called EVERY tick, unconditionally — there is
-# no separate always-on watchdog service for this backend, so the
-# continuous "is primary Wi-Fi down right now, and can it be recovered"
-# check lives here instead, structured exactly like
-# wifi-ap-fallback-watchdog.sh's own connected/try_reconnect/start_ap
-# loop: a single bad reading must NOT trigger AP mode, and once in AP
-# mode this MUST keep retrying the primary connection and revert the
-# instant it's back — both of those were missing in an earlier version
-# of this function and caused a real, live incident (falling back to AP
-# on a transient dip, then never reverting since a radio held by hostapd
-# can never show a route again on its own).
+# --- netplan-backend AP fallback: hostapd + networkd's own DHCP server.
+# Called every tick — a single bad reading must not flip modes (real past incident).
 
 ap_hostapd_active() {
   systemctl is-active --quiet "$AP_HOSTAPD_UNIT" 2>/dev/null
 }
 
-# ap_client_connected — true if any station is associated to the AP
-# interface right now. Backed by `iw` (installed alongside hostapd by
-# deploy-dashboard.sh for exactly this) rather than hostapd's own control
-# socket, since AP_HOSTAPD_CONF sets no ctrl_interface. If `iw` is somehow
-# missing, fails closed (reports "no client") rather than blocking the
-# dwell timer forever.
+# ap_client_connected — true if a station is associated to the AP right
+# now. Uses `iw` since AP_HOSTAPD_CONF sets no ctrl_interface for hostapd_cli.
 ap_client_connected() {
   local dev="$1"
   command -v iw >/dev/null 2>&1 || return 1
   iw dev "$dev" station dump 2>/dev/null | grep -q '^Station '
 }
 
-# wifi_connected_netplan — a real default route through the device is a
-# stronger signal than link state alone (matches the nmcli path's use of
-# GENERAL.STATE==100, "fully activated," not just "link up").
+# wifi_connected_netplan — a real default route is stronger signal than
+# link state alone (matches nmcli's GENERAL.STATE==100 check).
 wifi_connected_netplan() {
   local dev="$1"
   ip -4 route show dev "$dev" 2>/dev/null | grep -q '^default'
 }
 
-# ufw on a provisioned box is "default deny (incoming)" (harden-system.sh)
-# and only opens 22/80/443. systemd-networkd's DHCP server receives on a
-# normal UDP socket bound to port 67, so every client DISCOVER was hitting
-# INPUT DROP before it ever reached the server — the AP associated fine and
-# 192.168.50.1:80 was reachable (that port IS allowed), but nobody ever
-# got a lease. ufw's own built-in DHCP rule only covers the CLIENT direction
-# (sport 67 -> dport 68), not inbound server traffic. Confirmed live.
-# Scoped to the AP interface and torn down again on stop, so nothing stays
-# open once the box is back in normal client mode.
+# ufw default-denies incoming, so DHCP DISCOVERs hit INPUT DROP before
+# reaching the server — clients associated but never got a lease (confirmed live).
 ap_firewall_open() {
   local dev="$1"
   if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q "^Status: active"; then
@@ -568,14 +419,8 @@ start_ap_netplan() {
   ip link set "$wifi_dev" down >/dev/null 2>&1 || true
   ip addr flush dev "$wifi_dev" >/dev/null 2>&1 || true
 
-  # Hand this interface to systemd-networkd's own DHCP-server role instead
-  # of netplan's (client) config. See AP_NETWORKD_FILE above for why the
-  # 05- prefix is load-bearing. ConfigureWithoutCarrier=yes so the address
-  # is assigned even in the window before hostapd brings the radio up and
-  # gives the link carrier — without it networkd waits for carrier and the
-  # reconfigure below can no-op. No IPForward= here: renamed to
-  # IPv4Forwarding= in systemd 256+ and this box is 257, and an emergency
-  # admin AP routes nothing anyway.
+  # Hands the interface to networkd's DHCP-server role. ConfigureWithoutCarrier
+  # avoids waiting for hostapd to bring up carrier first. No IPForward= — this AP routes nothing.
   cat > "$AP_NETWORKD_FILE" <<EOF
 [Match]
 Name=$wifi_dev
@@ -616,12 +461,8 @@ EOF
     return
   fi
 
-  # Only NOW reconfigure the link: hostapd has just taken the radio into
-  # AP mode, so networkd re-reads its .network file against an interface
-  # that is actually up. Then verify the address really landed instead of
-  # assuming it did — a missing address here is exactly the failure mode
-  # (clients associate, then never get a DHCP lease) that the 05- rename
-  # above fixes, and it is silent unless checked for.
+  # Reconfigure only after hostapd brings the radio up, then verify the
+  # address actually landed — a silent miss here means clients associate but never get a lease.
   networkctl reconfigure "$wifi_dev" >/dev/null 2>&1 || true
   local i ap_ip_ok="false"
   for i in 1 2 3 4 5 6 7 8 9 10; do
@@ -635,10 +476,8 @@ EOF
   if [[ "$ap_ip_ok" == "true" ]]; then
     log_info "Emergency AP up: $ssid (${AP_IFACE_IP}, DHCP via systemd-networkd)"
   else
-    # Last resort so the admin can still reach the box by static IP even
-    # if networkd refused the file: assign the address by hand. This does
-    # NOT give a DHCP server (only networkd can do that here), so it is
-    # logged as an ERROR, not treated as success.
+    # Last resort: assign the static address by hand (no DHCP server this
+    # way) so the admin can still reach it — logged as an error, not success.
     ip addr add "$AP_IFACE_CIDR" dev "$wifi_dev" >/dev/null 2>&1 || true
     log_error "${AP_IFACE_IP} not assigned by systemd-networkd — no DHCP server on $wifi_dev; clients will associate but get no IP"
   fi
@@ -651,10 +490,8 @@ EOF
   fi
 }
 
-# stop_ap_netplan — always safe to call even if the AP isn't active
-# (e.g. after a successful reconnect attempt): removes the AP-mode
-# networkd config (so it stops claiming DHCPServer duty on this link)
-# and restores the normal netplan-managed client.
+# stop_ap_netplan — safe to call even if the AP isn't active; removes
+# the AP-mode networkd config and restores the normal client.
 stop_ap_netplan() {
   local wifi_dev="$1"
   ap_hostapd_active && log_info "Stopping emergency AP to attempt reconnect to primary Wi-Fi"
@@ -667,13 +504,8 @@ stop_ap_netplan() {
   netplan apply >/dev/null 2>&1 || true
 }
 
-# try_reconnect_netplan — mirrors wifi-ap-fallback-watchdog.sh's
-# try_reconnect() exactly: always attempt the primary connection first
-# (whether or not the AP is currently up) and give it a real timeout
-# window before giving up, rather than reacting to a single tick's
-# reading. This is what makes falling back to AP a last resort instead
-# of a hair-trigger, AND what lets the daemon find its way back out of
-# AP mode once the primary network is actually reachable again.
+# try_reconnect_netplan — always attempts primary first with a real
+# timeout window, so AP fallback is a last resort, not a hair-trigger.
 try_reconnect_netplan() {
   local wifi_dev="$1" timeout="${WIFI_RECONNECT_TIMEOUT:-25}"
   log_info "Attempting to reconnect to primary Wi-Fi (timeout ${timeout}s)"
@@ -694,18 +526,8 @@ try_reconnect_netplan() {
   return 1
 }
 
-# reconcile_ap_netplan — called every tick. Two independent timers guard
-# against reacting to a single noisy reading, after a real incident where
-# a one-tick blip pushed this box into AP mode (dropping it off the
-# normal LAN entirely):
-#   - AP_FALLBACK_DELAY_SECONDS: the primary connection must be down
-#     continuously for this long before the AP is started at all. Before
-#     that, nothing on the interface is touched — see the "not connected
-#     yet" branch below.
-#   - AP_MIN_DWELL_SECONDS: once the AP is up, see
-#     reconcile_ap_active_netplan below — it only counts down while no
-#     client is associated, so an admin connected to fix Wi-Fi is never
-#     kicked off mid-fix.
+# reconcile_ap_netplan — AP_FALLBACK_DELAY_SECONDS gates starting the AP,
+# AP_MIN_DWELL_SECONDS gates leaving it — both guard against a one-tick blip.
 reconcile_ap_netplan() {
   local wifi_dev="$1"
   local -a fields=()
@@ -732,12 +554,8 @@ reconcile_ap_netplan() {
     return  # already fine, nothing to do — the common case, checked cheaply first
   fi
 
-  # Not connected and the AP isn't up yet. Require a sustained outage, not
-  # a single missed tick: during the grace window below, nothing on the
-  # interface is touched at all — wpa_supplicant/networkd already retry
-  # connecting on their own, and try_reconnect_netplan's own teardown (it
-  # flushes the interface's address) on every 5s tick would manufacture
-  # exactly the disconnect/reconnect churn this delay exists to avoid.
+  # Not connected, AP not up yet. Wait out the grace window untouched —
+  # retrying every tick would itself cause disconnect/reconnect churn.
   local now disconnected_since elapsed
   now="$(date +%s)"
   if [[ ! -f "$DISCONNECTED_SINCE_FILE" ]]; then
@@ -760,12 +578,7 @@ reconcile_ap_netplan() {
 }
 
 # reconcile_ap_active_netplan — called every tick while the AP is up.
-# AP_MIN_DWELL_SECONDS only counts down while no client is associated,
-# restarting from zero the instant the last one disconnects — a
-# connected client means someone is actively using the emergency AP (to
-# fix Wi-Fi or change the SSID from the admin panel), and pulling the
-# radio out from under them mid-fix would defeat the point of the
-# fallback.
+# Dwell only counts down with no client connected; resets to 0 if one joins.
 reconcile_ap_active_netplan() {
   local wifi_dev="$1" ssid="$2" password="$3"
   if ap_client_connected "$wifi_dev"; then
@@ -817,11 +630,8 @@ write_status_nmcli() {
   systemctl is-enabled wifi-ap-fallback.service >/dev/null 2>&1 && ap_enabled="true"
   nmcli -t -f NAME connection show --active 2>/dev/null | grep -Fxq "Emergency-AP" && ap_active="true"
 
-  # All saved Wi-Fi client profiles (not just the active one), excluding
-  # the Emergency-AP itself — reported so the admin panel can show/prefill
-  # networks that are already configured on this box even before
-  # net_config.json has ever been saved through it (e.g. provision-pi.sh's
-  # initial "dashboard" SSID, or one set up by hand with nmcli/raspi-config).
+  # All saved client profiles except Emergency-AP itself — lets the admin
+  # panel prefill networks configured before net_config.json ever existed.
   local known_ssids_json
   known_ssids_json="$(nmcli -t -f NAME,TYPE connection show 2>/dev/null \
     | awk -F: '$2=="802-11-wireless" && $1!="Emergency-AP"{print $1}' \
@@ -831,17 +641,8 @@ write_status_nmcli() {
     "$conn" "$ip" "$known_ssids_json" "$ap_installed" "$ap_enabled" "$ap_active"
 }
 
-# refresh_status_cache_netplan — the expensive half of what
-# write_status_netplan() used to redo on every single tick: known_ssids
-# needs a python3+PyYAML pass over every /etc/netplan/*.yaml file, and
-# ap_enabled needs its own python3 pass over net_config.json. Neither can
-# change without a net_config.json edit (which regenerates $NETPLAN_FILE
-# via reconcile_wifi_netplan) or a foreign netplan file changing (which
-# only happens once, at the "claim ownership" step inside that same
-# function) — so this only needs to run right after reconcile_wifi runs,
-# from the main loop's "config changed" branch, not every CHECK_INTERVAL
-# tick. Live state (current SSID/IP/AP-active) still lives in
-# write_status_netplan() itself and stays fully real-time.
+# refresh_status_cache_netplan — recomputes known_ssids/ap_enabled (each a
+# python3 spawn). Only called from the main loop's "config changed" branch.
 refresh_status_cache_netplan() {
   local wifi_dev="$1"
   local -a ap_fields=()
@@ -875,23 +676,15 @@ PYEOF
 )"
 }
 
-# write_status_netplan — SSID/IP/AP-active are read fresh every tick (they
-# reflect live, independently-changing network state, e.g. a signal drop
-# with no net_config.json edit involved). known_ssids/ap_enabled come from
-# the CACHED_* globals instead — see refresh_status_cache_netplan() above
-# for why re-deriving those here on every tick was needless disk I/O and
-# two extra python3 interpreter spawns, every 5s, forever.
+# write_status_netplan — SSID/IP/AP-active stay live every tick;
+# known_ssids/ap_enabled come from the CACHED_* globals instead.
 write_status_netplan() {
   local wifi_dev="$1"
   mkdir -p "$STATUS_DIR"
   local connected="false" conn="" ip="" ap_installed="false" ap_active="false"
 
-  # installed = hostapd binary present (capability), enabled = net_config.json
-  # says it should be on (persisted intent), active = hostapd actually running
-  # right now — three independent facts, not one collapsed into "active".
-  # Collapsing them (an earlier version of this function did) makes the admin
-  # panel report "not installed" for a fully configured, working AP fallback
-  # any time it's correctly NOT currently active, which is the common case.
+  # installed/enabled/active are three independent facts — collapsing them
+  # (an earlier version did) wrongly reports "not installed" whenever just inactive.
   command -v hostapd >/dev/null 2>&1 && ap_installed="true"
 
   if ap_hostapd_active; then
@@ -932,10 +725,8 @@ EOF
 
 log_info "dashboard-net-apply daemon started (config=$NET_CONFIG_FILE)"
 mkdir -p "$STATUS_DIR"
-# Upgrade cleanup: a box provisioned before the 05- rename could still
-# carry the old, always-losing 90- file if the daemon was killed while the AP
-# was up. It never wins against netplan's 10-netplan-*.network anyway, but
-# leaving it behind is confusing — drop it unconditionally at startup.
+# Upgrade cleanup: drops a stale pre-05-rename file that never wins
+# against netplan's 10-netplan-*.network anyway, but is confusing to leave.
 rm -f "$AP_NETWORKD_FILE_LEGACY"
 nmcli radio wifi on >/dev/null 2>&1 || true
 
@@ -947,14 +738,7 @@ while true; do
     WIFI_DEV="$(detect_wifi_dev "$BACKEND")"
     if [[ -n "$WIFI_DEV" ]]; then
       if [[ -f "$NET_CONFIG_FILE" ]]; then
-        # Change detection used to be `sha256sum "$NET_CONFIG_FILE" | awk
-        # ...` compared against a hash saved in $APPLIED_HASH_FILE — every
-        # tick, forever, that's a sha256sum + awk (+ a cat to read the old
-        # hash) spawned just to answer "did this file move." A plain
-        # newer-than mtime comparison is a bash builtin (`-nt`, no fork at
-        # all) and answers the exact same question here, since nothing
-        # else touches $APPLIED_HASH_FILE's mtime except the `touch` right
-        # after a real reconcile below.
+        # mtime check (bash builtin) instead of sha256sum+awk+cat every tick.
         if [[ ! -f "$APPLIED_HASH_FILE" || "$NET_CONFIG_FILE" -nt "$APPLIED_HASH_FILE" ]]; then
           log_info "net_config.json changed — reconciling ($BACKEND backend)"
           reconcile_wifi "$BACKEND" "$WIFI_DEV"
@@ -967,10 +751,8 @@ while true; do
           touch "$APPLIED_HASH_FILE"
         fi
       fi
-      # The netplan backend has no separate always-on AP watchdog service
-      # (the nmcli backend's is wifi-ap-fallback.sh's own), so its AP
-      # toggle is re-evaluated every tick here instead of only on config
-      # change.
+      # netplan has no separate AP watchdog service (nmcli's is
+      # wifi-ap-fallback.sh) — re-evaluated every tick here instead.
       if [[ "$BACKEND" == "netplan" ]]; then
         reconcile_ap_netplan "$WIFI_DEV"
       fi

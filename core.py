@@ -1,12 +1,5 @@
-"""The one Flask app instance, shared by every route module.
-
-Deliberately its own tiny file, not part of app.py: `python app.py` runs
-that file as `__main__`, not as a module named `app`. If a routes/*.py
-module did `from app import app`, Python would import a SECOND, separate
-copy of app.py under the name "app" — a different Flask instance than the
-one actually serving requests, so every route registered on it would be
-silently dead. Importing from this never-run-directly module avoids that.
-"""
+"""The one Flask app instance. Separate from app.py so routes/*.py importing
+it don't trigger a second `__main__` re-run with a dead second instance."""
 import os
 
 from flask import Flask

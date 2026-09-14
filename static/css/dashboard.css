@@ -1,13 +1,5 @@
-/* Color palettes. Each [data-palette] block is one complete, self-
-   contained look (dark or light baked in, not a separate toggle) —
-   dashboard.html sets data-palette from settings.color_palette (server-
-   rendered) and dashboard.js keeps it in sync on every poll, so a palette
-   change made in /admin shows up live within 5s, no reload. --accent-rgb
-   is the same color as --accent, spelled out as bare "r, g, b" — CSS
-   can't derive rgba() components from a hex custom property, and the
-   glow/scan/flash effects further down need that to follow the palette
-   instead of being hardcoded to one color. Adding a 5th palette = one
-   more block here + one more <option> in templates/admin.html. */
+/* One self-contained look per [data-palette] block. --accent-rgb is
+   --accent as bare "r,g,b" for rgba() use in the effects below. */
 :root, :root[data-palette="midnight"] {
   --bg-1: #0f172a;
   --bg-2: #1e1b4b;
@@ -52,15 +44,8 @@
 :root {
   --dashboard-font: "Noto Sans Arabic";
 
-  /* Timing knobs for the effects below — tune here, no need to touch the
-     animations themselves. Each effect is independently on/off via its
-     own body.fx-glass / .fx-scan / .fx-flash / .fx-glow class, driven by
-     the admin panel's "Visual effects" checkboxes (see dashboard.js) —
-     for weak boards (Orange Pi Zero 3, Pi Zero) where continuous CSS
-     animations cost real CPU/GPU, and backdrop-filter blur (fx-glass)
-     especially so. scan/glow are full cycle length: each fires once per
-     cycle then sits invisible for the rest of it (see their keyframes'
-     opacity timing). */
+  /* Effect durations. Each effect is independently toggled via its own
+     body.fx-glass/fx-scan/fx-flash/fx-glow class (admin panel checkboxes). */
   --scan-duration: 10s;
   --glow-duration: 15s;
   --flash-duration: 2s;
@@ -88,9 +73,7 @@ body {
   display: flex;
   flex-direction: column;
 }
-/* Fixed 15% of the full screen height, regardless of how much text the
-   title/subtitle hold — long text shrinks via clamp() rather than
-   growing this band. */
+/* Fixed height regardless of text length — long text shrinks via clamp(). */
 .header {
   flex: 0 0 auto;
   min-height: 10vh;
@@ -154,47 +137,17 @@ body {
   padding: var(--card-pad, 19px);
   min-width: 0;
   min-height: 0;
-  /* Tells the browser a card's internal changes (price text, the flash/
-     scan pseudo-elements) never affect the layout of anything outside
-     its own box — true here, since every card is an independent grid
-     cell sized by the grid track, not by its own content. Lets the
-     browser skip re-checking the rest of the grid when only one card
-     updates. `layout` only, deliberately not `paint`: contain:paint
-     forces clipping equivalent to overflow:hidden regardless of the
-     element's actual overflow value, which would silently break the
-     flash glow's overflow:visible bleed above. No visual effect either
-     way. */
+  /* Isolates layout per-card so one card updating doesn't recheck the
+     grid. `layout` only — `paint` would force-clip the flash glow below. */
   contain: layout;
 }
-/* Frosted glass: lets the background gradient show through softly
-   instead of a flat translucent fill. Gated behind fx-glass since
-   backdrop-filter is the single priciest effect here to keep live —
-   the first one to turn off on a board showing high CPU/GPU usage. */
+/* Frosted glass — the priciest effect here; first to disable on a weak board. */
 body.fx-glass .card {
   backdrop-filter: blur(10px);
   -webkit-backdrop-filter: blur(10px);
 }
-/* Rotating conic-gradient ring on the border, masked so only the ring
-   (not the whole card) is visible. content-box mask + mask-composite
-   exclude = "ring" trick; -webkit- prefixed pair for Chromium. Dim (low
-   alpha) and blurred on purpose — a faint sweep, not a bright ring — and
-   the opacity keyframes below make it sweep once per cycle then vanish,
-   rather than spin continuously.
-   The angle is animated via the --scan-angle custom property, which the
-   gradient's `from` tracks — this MUST stay a custom-property animation,
-   not `transform: rotate()` on the element: the ring is a rounded
-   RECTANGLE, not a circle, so rotating the whole layer swings its
-   corners out from under the card's actual (non-rotating) rounded-rect
-   border — confirmed live, it looks broken, not smooth. Only the
-   gradient's own angle can sweep a highlight around a fixed rectangular
-   outline; there's no compositor-only way to do that.
-   `steps()` in place of `linear` is the real optimization available here:
-   it caps how often the browser actually recomputes/repaints the
-   gradient (a genuine paint cost every step, custom property or not) to
-   a fixed rate instead of once per compositor frame — 24 steps across
-   the ~2s visible sweep is ~12 repaints/second, plenty smooth for a
-   faint, blurred highlight glanced at from a few feet away, at a
-   fraction of the paint work. */
+/* Masked ring sweep. Must animate --scan-angle, NOT transform:rotate()
+   (rect corners swing off a rotated card — confirmed live, broken). */
 .card::before {
   content: '';
   position: absolute;
@@ -220,20 +173,8 @@ body.fx-scan .card::before {
   24%  { opacity: 0; }
   100% { --scan-angle: 360deg; opacity: 0; }
 }
-/* One-shot ping when a card's price actually changes on refresh (see
-   dashboard.js) — the class is added via a remove/reflow/re-add so the
-   animation replays on the same persistent node, then dashboard.js
-   removes it again on `animationend` (see there for why that matters —
-   this rule also flips overflow to visible for the duration).
-   The glow lives on a separate ::after layer with a FIXED box-shadow,
-   faded via opacity, instead of animating the shadow's blur/spread
-   directly like before — animating box-shadow forces a full repaint
-   (re-rasterizing the blur) on every frame no matter how small the
-   change looks, which is real cost on a weak GPU. Only opacity/transform
-   animate now, both compositor-only: the shadow is rasterized once and
-   the GPU just fades/scales the existing layer. border-color still
-   animates directly (cheap — a flat color fill, not a blur) since
-   splitting it out wouldn't be worth the extra layer. */
+/* One-shot price-change ping. Glow is a separate ::after with a FIXED
+   shadow faded by opacity — animating box-shadow directly repaints every frame. */
 body.fx-flash .card.flash {
   overflow: visible;
   animation: cardFlashScale var(--flash-duration) ease-out;
@@ -305,9 +246,7 @@ body.fx-flash .card.flash::after {
   text-overflow: clip;
   white-space: nowrap;
 }
-/* Faint glow on the price — fires once per cycle (fades in, fades out)
-   rather than breathing continuously, and capped low (~20% of the
-   original intensity) so it stays in the background, not the focus. */
+/* Faint glow, once per cycle rather than breathing continuously. */
 body.fx-glow .card .value {
   animation: valueGlow var(--glow-duration) ease-in-out infinite;
 }
@@ -340,9 +279,7 @@ body.fx-glow .card .value {
   left: 16px;
   bottom: 14px;
   font-size: 0.85rem;
-  /* Fixed light-on-dark, not var(--text-dim) — this chip's own
-     background is always dark regardless of palette (including Pearl's
-     light theme), so text-dim (dark on Pearl) would be unreadable here. */
+  /* Fixed light-on-dark: this chip's bg is always dark, unlike Pearl's page. */
   color: rgba(255, 255, 255, 0.85);
   background: rgba(0, 0, 0, 0.35);
   padding: 6px 12px;

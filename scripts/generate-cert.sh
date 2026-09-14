@@ -1,17 +1,6 @@
 #!/usr/bin/env bash
-# Generate (or renew) the self-signed TLS certificate used by app.py's
-# HTTPS admin listener. Safe to run any time — it's a no-op unless the
-# cert is missing, close to expiring, or the hostname/IP it was issued for
-# has changed (e.g. moved networks, DHCP handed out a new address).
-#
-# Called once by deploy-dashboard.sh right after cloning (so HTTPS is up
-# from the very first boot), and every run of scripts/auto-update.sh
-# (roughly every 6 hours via the systemd timer) so renewal happens on its
-# own without anyone noticing.
-#
-# Usage:
-#   INSTALL_DIR=/path/to/repo ./generate-cert.sh
-#   (INSTALL_DIR defaults to this script's own repo root)
+# Generates/renews the self-signed TLS cert — a no-op unless missing/
+# expiring/hostname changed. Called by deploy-dashboard.sh and auto-update.sh.
 
 set -euo pipefail
 

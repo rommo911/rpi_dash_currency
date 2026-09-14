@@ -25,13 +25,8 @@
   {% if msg %}<div class="msg ok">{{ msg }}</div>{% endif %}
   {% if error %}<div class="msg err">{{ error }}</div>{% endif %}
 
-  <!-- None of these run anything privileged directly — each just writes
-       desired state that a separate root-run daemon polls and applies
-       (see NET_CONFIG_FILE's comment in config.py). Standalone forms (csrf
-       token only, plus auto-update-toggle's checkbox) so their visible
-       fields/buttons can live inside the settings-cards below, associated
-       purely via each input's form="..." attribute, without nesting one
-       form inside another. -->
+  <!-- Standalone forms (writes only, applied by the root daemon) so their
+       fields can live inside the settings-cards below via form="...", not nested. -->
   <form id="auto-update-toggle" method="post" action="{{ url_for('admin_toggle_auto_update') }}"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"></form>
   <form id="check-update-now" method="post" action="{{ url_for('admin_check_update_now') }}"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"></form>
   <form id="wifi-save" method="post" action="{{ url_for('admin_wifi_save') }}"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"></form>

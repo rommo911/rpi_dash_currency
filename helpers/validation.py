@@ -7,10 +7,8 @@ from config import MAX_PRICE_RAW_LEN, MAX_PRICE_VALUE, MAX_SSID_LEN, MAX_WIFI_PA
 
 
 def clean_text(raw, max_len):
-    """Strip control/newline chars (keeps normal spaces and non-Latin
-    scripts intact), collapse whitespace, cap by character count. Returns
-    None if too long — the caller decides how to report that rather than
-    silently truncating a mistake."""
+    """Strip control chars, collapse whitespace, cap length. None if too
+    long — caller reports that rather than silently truncating."""
     if raw is None:
         return ""
     cleaned = "".join(ch for ch in raw if ch == " " or unicodedata.category(ch)[0] != "C")
@@ -21,9 +19,7 @@ def clean_text(raw, max_len):
 
 
 def parse_price(raw):
-    """Parse a price string with sane bounds. None if not a valid, finite,
-    non-negative, reasonably-sized number (rejects inf/nan, huge digit
-    strings, negatives, fat-fingered overflow)."""
+    """None unless a valid, finite, non-negative, bounded number."""
     if raw is None:
         return None
     raw = raw.strip()
@@ -50,14 +46,8 @@ def clean_ssid(raw):
 
 
 def validate_wifi_password(raw):
-    """Empty, or MIN-MAX chars (WPA2-PSK bounds); None if outside that
-    range. Doesn't collapse whitespace like clean_text() — a Wi-Fi
-    password may legitimately contain meaningful spaces.
-
-    Empty here does NOT mean "open network" (callers reject those
-    outright) — it means "admin left the field alone", which
-    admin_wifi_save()/admin_ap_save() resolve to the saved password for
-    an unchanged SSID, or to an error."""
+    """Empty or MIN-MAX chars, else None. Empty means "field left alone",
+    not "open network" — callers resolve that to the saved password or an error."""
     if raw is None:
         return ""
     cleaned = "".join(ch for ch in raw if unicodedata.category(ch)[0] != "C")

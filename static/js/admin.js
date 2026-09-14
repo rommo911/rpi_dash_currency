@@ -1,6 +1,5 @@
-// Price fields are type="text" (not type="number") specifically to kill
-// the browser's native spinner/scroll-to-change-value behavior on number
-// inputs — this restores "only digits and one dot" by hand instead.
+// type="text" (not "number") to kill the native spinner; this restores
+// "digits + one dot" by hand.
 function filterDecimalInput(el) {
   let v = el.value.replace(/[^0-9.]/g, '');
   const i = v.indexOf('.');
