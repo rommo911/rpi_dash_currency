@@ -1,5 +1,7 @@
 if [ -z "$DISPLAY" ] && [ "$(tty)" = "/dev/tty1" ]; then
   # Generic X11 launcher (Pi OS Lite, most Armbian tty1-X images) — a
   # fallback, not a hard assumption every Armbian image behaves the same.
-  startx -- -nocursor
+  # Redirected so startx's own xauth/Xorg startup noise doesn't flash on
+  # tty1 before .xinitrc takes over (same reasoning as .xinitrc.log there).
+  startx -- -nocursor >"$HOME/.startx.log" 2>&1
 fi

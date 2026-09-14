@@ -10,4 +10,4 @@ sleep 1
 until curl -s http://localhost:80 >/dev/null; do sleep 1; done
 # Kept in the foreground with exec — works on Pi OS and Armbian when
 # startx runs from tty1; Armbian may need distro-native autologin to reach this.
-exec sh -c 'rm -f "/home/kiosk/.config/chromium/SingletonLock" "/home/kiosk/.config/chromium/SingletonSocket" "/home/kiosk/.config/chromium/SingletonCookie" 2>/dev/null; exec $(command -v chromium-browser || command -v chromium) --kiosk --incognito --noerrant --disable-infobars --disable-session-crashed-bubble --check-for-update-interval=31536000 http://localhost:80'
+exec sh -c 'rm -f "/dev/shm/chromium-kiosk/SingletonLock" "/dev/shm/chromium-kiosk/SingletonSocket" "/dev/shm/chromium-kiosk/SingletonCookie" 2>/dev/null; exec $(command -v chromium-browser || command -v chromium) --kiosk --incognito --noerrant --disable-infobars --disable-session-crashed-bubble --check-for-update-interval=31536000 --user-data-dir=/dev/shm/chromium-kiosk http://localhost:80'
