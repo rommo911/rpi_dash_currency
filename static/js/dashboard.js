@@ -1,8 +1,17 @@
 const MAX_DISPLAYED_CURRENCIES = 5;
 const PAGE_LOAD_VERSION = window.PAGE_LOAD_VERSION;
+
+// Single kill switch for every visual effect (card border scan, frosted
+// glass, price glow pulse, update flash — see dashboard.css's `fx-on`
+// rules). Flip to false on weak boards (Pi Zero) where the continuous
+// CSS animations cost real CPU/GPU. Nothing else needs to change.
+const EFFECTS_ENABLED = true;
+document.body.classList.toggle('fx-on', EFFECTS_ENABLED);
+
 let lastUpdatedAt = null;
 let lastCount = 0;
 let lastHostInfo = { hostname: '', ip: '' };
+let lastPrices = {}; // code -> price, for the update-flash effect
 
 let hostInfoShown = false;
 
@@ -164,9 +173,14 @@ async function refresh() {
     } else {
       const grid = document.createElement('div');
       grid.className = 'grid';
+      const nextPrices = {};
       shown.forEach(c => {
         const card = document.createElement('div');
-        card.className = 'card';
+        // lastPrices[c.code] === undefined means "first time we've seen
+        // this currency" (page just loaded, or it was just enabled) —
+        // never flash that, only an actual change from a known value.
+        const changed = EFFECTS_ENABLED && lastPrices[c.code] !== undefined && lastPrices[c.code] !== c.price;
+        card.className = changed ? 'card flash' : 'card';
         card.innerHTML = `
           <div class="icon-badge">${c.flag ? `<img src="${safeFlagSrc(c.flag)}" alt="${esc(c.name)} flag">` : ''}</div>
           <div class="code">${esc(c.code)}</div>
@@ -174,7 +188,9 @@ async function refresh() {
           <div class="value">${esc(c.symbol)}${fmt(c.price)}</div>
         `;
         grid.appendChild(card);
+        nextPrices[c.code] = c.price;
       });
+      lastPrices = nextPrices;
       wrap.innerHTML = '';
       wrap.appendChild(grid);
       fitGrid();

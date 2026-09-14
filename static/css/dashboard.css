@@ -7,6 +7,22 @@
   --text-dim: #94a3b8;
   --accent: #22d3ee;
   --dashboard-font: "Noto Sans Arabic";
+
+  /* Timing knobs for the effects below — tune here, no need to touch the
+     animations themselves. Effects are fully on/off via the single
+     EFFECTS_ENABLED flag at the top of dashboard.js (body.fx-on), for
+     weak boards (Pi Zero) where continuous CSS animations cost real CPU.
+     scan/glow are full cycle length: each fires once per cycle then sits
+     invisible for the rest of it (see their keyframes' opacity timing). */
+  --scan-duration: 10s;
+  --glow-duration: 15s;
+  --flash-duration: 2s;
+}
+
+@property --scan-angle {
+  syntax: '<angle>';
+  inherits: false;
+  initial-value: 0deg;
 }
 * { box-sizing: border-box; }
 html, body { height: 100%; }
@@ -77,6 +93,7 @@ body {
   border-radius: 24px;
 }
 .card {
+  position: relative;
   background: var(--card-bg);
   border: 4px solid var(--card-border);
   border-radius: 1.9vh;
@@ -90,6 +107,57 @@ body {
   padding: var(--card-pad, 19px);
   min-width: 0;
   min-height: 0;
+}
+/* Frosted glass: lets the background gradient show through softly
+   instead of a flat translucent fill. Gated behind fx-on since
+   backdrop-filter is one of the pricier effects to keep live. */
+body.fx-on .card {
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+}
+/* Rotating conic-gradient ring on the border, masked so only the ring
+   (not the whole card) is visible. content-box mask + mask-composite
+   exclude = "ring" trick; -webkit- prefixed pair for Chromium. Dim (low
+   alpha) and blurred on purpose — a faint sweep, not a bright ring — and
+   the opacity keyframes below make it sweep once per cycle then vanish,
+   rather than spin continuously. */
+.card::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  padding: 3px;
+  border-radius: inherit;
+  background: conic-gradient(from var(--scan-angle), transparent 0deg, transparent 300deg, rgba(34, 211, 238, 0.25) 330deg, rgba(34, 211, 238, 0.25) 360deg);
+  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  mask-composite: exclude;
+  pointer-events: none;
+  filter: blur(4px);
+  opacity: 0;
+}
+body.fx-on .card::before {
+  animation: cardScan var(--scan-duration) linear infinite;
+}
+@keyframes cardScan {
+  0%   { --scan-angle: 0deg;   opacity: 0; }
+  3%   { opacity: 1; }
+  20%  { --scan-angle: 360deg; opacity: 1; }
+  24%  { opacity: 0; }
+  100% { --scan-angle: 360deg; opacity: 0; }
+}
+/* One-shot ping when a card's price actually changes on refresh (see
+   dashboard.js) — the class is added fresh per render, never toggled
+   back off, since the whole card node is rebuilt each poll anyway. This
+   one is meant to be the most noticeable of the three effects — a quick
+   bright pop (glow + slight scale) that then fades over 2s. */
+body.fx-on .card.flash {
+  animation: cardFlash var(--flash-duration) ease-out;
+}
+@keyframes cardFlash {
+  0%   { box-shadow: 0 0 0 0 rgba(34, 211, 238, 0.9); border-color: rgba(34, 211, 238, 0.9); transform: scale(1); }
+  25%  { box-shadow: 0 0 55px 16px rgba(34, 211, 238, 0.55); border-color: rgba(34, 211, 238, 0.8); transform: scale(1.03); }
+  100% { box-shadow: 0 0 70px 20px rgba(34, 211, 238, 0); border-color: var(--card-border); transform: scale(1); }
 }
 .icon-badge {
   width: var(--icon-w, 90%);
@@ -133,6 +201,24 @@ body {
   overflow: visible;
   text-overflow: clip;
   white-space: nowrap;
+}
+/* Faint glow on the price — fires once per cycle (fades in, fades out)
+   rather than breathing continuously, and capped low (~20% of the
+   original intensity) so it stays in the background, not the focus. */
+body.fx-on .card .value {
+  animation: valueGlow var(--glow-duration) ease-in-out infinite;
+}
+@keyframes valueGlow {
+  0%, 20%, 100% { text-shadow: 0 0 0 rgba(34, 211, 238, 0); }
+  30% { text-shadow: 0 0 11px rgba(34, 211, 238, 0.45); }
+}
+
+/* Single kill switch for all of the above (see EFFECTS_ENABLED in
+   dashboard.js) plus a courtesy for anyone with reduced-motion set. */
+@media (prefers-reduced-motion: reduce) {
+  .card::before, .card .value, .card.flash {
+    animation: none !important;
+  }
 }
 /* Lives in the reserved bottom 5% margin rather than stealing height
    from the price grid. */
