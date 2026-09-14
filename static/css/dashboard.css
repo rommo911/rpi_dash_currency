@@ -154,6 +154,17 @@ body {
   padding: var(--card-pad, 19px);
   min-width: 0;
   min-height: 0;
+  /* Tells the browser a card's internal changes (price text, the flash/
+     scan pseudo-elements) never affect the layout of anything outside
+     its own box — true here, since every card is an independent grid
+     cell sized by the grid track, not by its own content. Lets the
+     browser skip re-checking the rest of the grid when only one card
+     updates. `layout` only, deliberately not `paint`: contain:paint
+     forces clipping equivalent to overflow:hidden regardless of the
+     element's actual overflow value, which would silently break the
+     flash glow's overflow:visible bleed above. No visual effect either
+     way. */
+  contain: layout;
 }
 /* Frosted glass: lets the background gradient show through softly
    instead of a flat translucent fill. Gated behind fx-glass since
@@ -168,7 +179,22 @@ body.fx-glass .card {
    exclude = "ring" trick; -webkit- prefixed pair for Chromium. Dim (low
    alpha) and blurred on purpose — a faint sweep, not a bright ring — and
    the opacity keyframes below make it sweep once per cycle then vanish,
-   rather than spin continuously. */
+   rather than spin continuously.
+   The angle is animated via the --scan-angle custom property, which the
+   gradient's `from` tracks — this MUST stay a custom-property animation,
+   not `transform: rotate()` on the element: the ring is a rounded
+   RECTANGLE, not a circle, so rotating the whole layer swings its
+   corners out from under the card's actual (non-rotating) rounded-rect
+   border — confirmed live, it looks broken, not smooth. Only the
+   gradient's own angle can sweep a highlight around a fixed rectangular
+   outline; there's no compositor-only way to do that.
+   `steps()` in place of `linear` is the real optimization available here:
+   it caps how often the browser actually recomputes/repaints the
+   gradient (a genuine paint cost every step, custom property or not) to
+   a fixed rate instead of once per compositor frame — 24 steps across
+   the ~2s visible sweep is ~12 repaints/second, plenty smooth for a
+   faint, blurred highlight glanced at from a few feet away, at a
+   fraction of the paint work. */
 .card::before {
   content: '';
   position: absolute;
@@ -185,7 +211,7 @@ body.fx-glass .card {
   opacity: 0;
 }
 body.fx-scan .card::before {
-  animation: cardScan var(--scan-duration) linear infinite;
+  animation: cardScan var(--scan-duration) steps(24) infinite;
 }
 @keyframes cardScan {
   0%   { --scan-angle: 0deg;   opacity: 0; }
@@ -195,17 +221,46 @@ body.fx-scan .card::before {
   100% { --scan-angle: 360deg; opacity: 0; }
 }
 /* One-shot ping when a card's price actually changes on refresh (see
-   dashboard.js) — the class is added fresh per render, never toggled
-   back off, since the whole card node is rebuilt each poll anyway. This
-   one is meant to be the most noticeable of the three effects — a quick
-   bright pop (glow + slight scale) that then fades over 2s. */
+   dashboard.js) — the class is added via a remove/reflow/re-add so the
+   animation replays on the same persistent node, then dashboard.js
+   removes it again on `animationend` (see there for why that matters —
+   this rule also flips overflow to visible for the duration).
+   The glow lives on a separate ::after layer with a FIXED box-shadow,
+   faded via opacity, instead of animating the shadow's blur/spread
+   directly like before — animating box-shadow forces a full repaint
+   (re-rasterizing the blur) on every frame no matter how small the
+   change looks, which is real cost on a weak GPU. Only opacity/transform
+   animate now, both compositor-only: the shadow is rasterized once and
+   the GPU just fades/scales the existing layer. border-color still
+   animates directly (cheap — a flat color fill, not a blur) since
+   splitting it out wouldn't be worth the extra layer. */
 body.fx-flash .card.flash {
-  animation: cardFlash var(--flash-duration) ease-out;
+  overflow: visible;
+  animation: cardFlashScale var(--flash-duration) ease-out;
+  will-change: transform, border-color;
 }
-@keyframes cardFlash {
-  0%   { box-shadow: 0 0 0 0 rgba(var(--accent-rgb), 0.9); border-color: rgba(var(--accent-rgb), 0.9); transform: scale(1); }
-  25%  { box-shadow: 0 0 55px 16px rgba(var(--accent-rgb), 0.55); border-color: rgba(var(--accent-rgb), 0.8); transform: scale(1.03); }
-  100% { box-shadow: 0 0 70px 20px rgba(var(--accent-rgb), 0); border-color: var(--card-border); transform: scale(1); }
+@keyframes cardFlashScale {
+  0%   { border-color: rgba(var(--accent-rgb), 0.9); transform: scale(1); }
+  25%  { border-color: rgba(var(--accent-rgb), 0.8); transform: scale(1.03); }
+  100% { border-color: var(--card-border); transform: scale(1); }
+}
+.card::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  box-shadow: 0 0 55px 16px rgba(var(--accent-rgb), 0.55);
+  pointer-events: none;
+  opacity: 0;
+}
+body.fx-flash .card.flash::after {
+  animation: cardFlashGlow var(--flash-duration) ease-out;
+  will-change: opacity, transform;
+}
+@keyframes cardFlashGlow {
+  0%   { opacity: 0.9; transform: scale(1); }
+  25%  { opacity: 1;   transform: scale(1.03); }
+  100% { opacity: 0;   transform: scale(1); }
 }
 .icon-badge {
   width: var(--icon-w, 90%);
@@ -264,7 +319,7 @@ body.fx-glow .card .value {
 /* Courtesy override for anyone with reduced-motion set, regardless of
    the admin panel's own per-effect toggles above. */
 @media (prefers-reduced-motion: reduce) {
-  .card::before, .card .value, .card.flash {
+  .card::before, .card::after, .card .value, .card.flash {
     animation: none !important;
   }
 }

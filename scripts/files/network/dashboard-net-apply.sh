@@ -48,11 +48,28 @@ AP_FALLBACK_SCRIPT="$INSTALL_DIR/scripts/wifi-ap-fallback.sh"
 
 STATUS_DIR="/run/dashboard-net"
 STATUS_FILE="$STATUS_DIR/status.json"
+# Marker only — content is never read, just its mtime vs. NET_CONFIG_FILE's
+# (see the main loop). Named applied.sha256 in an earlier version that
+# actually stored a hash there; kept the same path on purpose so an
+# upgraded box doesn't leave a stale copy of the old file behind.
 APPLIED_HASH_FILE="$STATUS_DIR/applied.sha256"
 APPLIED_SSIDS_FILE="$STATUS_DIR/applied_ssids"
 AP_STARTED_FILE="$STATUS_DIR/ap_started_at"
 DISCONNECTED_SINCE_FILE="$STATUS_DIR/disconnected_since"
 AP_CLIENT_FREE_SINCE_FILE="$STATUS_DIR/ap_client_free_since"
+
+# write_status_netplan() used to recompute both of these from scratch on
+# EVERY CHECK_INTERVAL tick (5s, forever) regardless of whether anything
+# had changed: known_ssids meant spawning a full python3+PyYAML interpreter
+# to re-read every /etc/netplan/*.yaml file off disk, and ap_enabled meant
+# a second python3 spawn just to re-read net_config.json. Neither can
+# change between one net_config.json edit and the next, so both are cached
+# here and only refreshed by refresh_status_cache_netplan(), called from
+# the same "config changed" branch that already gates reconcile_wifi —
+# see the main loop below. Defaults cover the (rare) tick where
+# NET_CONFIG_FILE doesn't exist yet, before that branch has ever run.
+CACHED_KNOWN_SSIDS_JSON="[]"
+CACHED_AP_ENABLED="false"
 
 NETPLAN_FILE="/etc/netplan/90-dashboard-wifi.yaml"
 AP_IFACE_IP="192.168.50.1"
@@ -814,49 +831,25 @@ write_status_nmcli() {
     "$conn" "$ip" "$known_ssids_json" "$ap_installed" "$ap_enabled" "$ap_active"
 }
 
-# write_status_netplan — SSID/IP/known-networks discovered without any
-# extra WiFi-specific CLI tool: `ip` (already required) plus a plain YAML
-# read of our own managed file for "known" networks (the AP-fallback
-# case's own SSID is intentionally excluded, same as the nmcli path
-# excludes Emergency-AP) and, on first run before we've ever written
-# $NETPLAN_FILE, whatever `netplan status` reports as currently active —
-# this is exactly the discovery path that lets the admin panel prefill a
-# network that was already configured at image-build time (e.g. an
-# Armbian board's own bring-up netplan file) before this daemon ever
-# takes it over.
-write_status_netplan() {
+# refresh_status_cache_netplan — the expensive half of what
+# write_status_netplan() used to redo on every single tick: known_ssids
+# needs a python3+PyYAML pass over every /etc/netplan/*.yaml file, and
+# ap_enabled needs its own python3 pass over net_config.json. Neither can
+# change without a net_config.json edit (which regenerates $NETPLAN_FILE
+# via reconcile_wifi_netplan) or a foreign netplan file changing (which
+# only happens once, at the "claim ownership" step inside that same
+# function) — so this only needs to run right after reconcile_wifi runs,
+# from the main loop's "config changed" branch, not every CHECK_INTERVAL
+# tick. Live state (current SSID/IP/AP-active) still lives in
+# write_status_netplan() itself and stays fully real-time.
+refresh_status_cache_netplan() {
   local wifi_dev="$1"
-  mkdir -p "$STATUS_DIR"
-  local connected="false" conn="" ip="" ap_installed="false" ap_enabled="false" ap_active="false"
-
-  # installed = hostapd binary present (capability), enabled = net_config.json
-  # says it should be on (persisted intent), active = hostapd actually running
-  # right now — three independent facts, not one collapsed into "active".
-  # Collapsing them (an earlier version of this function did) makes the admin
-  # panel report "not installed" for a fully configured, working AP fallback
-  # any time it's correctly NOT currently active, which is the common case.
-  command -v hostapd >/dev/null 2>&1 && ap_installed="true"
   local -a ap_fields=()
   mapfile -d '' -t ap_fields < <(read_ap_config)
-  [[ "${ap_fields[0]:-0}" == "1" ]] && ap_enabled="true"
+  CACHED_AP_ENABLED="false"
+  [[ "${ap_fields[0]:-0}" == "1" ]] && CACHED_AP_ENABLED="true"
 
-  if ap_hostapd_active; then
-    ap_active="true"
-    conn=""; ip="$AP_IFACE_IP"
-  else
-    if wifi_connected_netplan "$wifi_dev"; then
-      connected="true"
-    fi
-    # `iw` gives a stable, well-documented "SSID: <name>" line — far less
-    # risky to depend on than guessing netplan's JSON status schema.
-    if command -v iw >/dev/null 2>&1; then
-      conn="$(iw dev "$wifi_dev" link 2>/dev/null | awk -F': ' '/^[[:space:]]*SSID:/{print $2; exit}')"
-    fi
-    ip="$(ip -4 -o addr show dev "$wifi_dev" 2>/dev/null | awk '{print $4}' | cut -d/ -f1 | head -n1)"
-  fi
-
-  local known_ssids_json
-  known_ssids_json="$(python3 - "$NETPLAN_FILE" "$wifi_dev" <<'PYEOF'
+  CACHED_KNOWN_SSIDS_JSON="$(python3 - "$NETPLAN_FILE" "$wifi_dev" <<'PYEOF'
 import sys
 try:
     import yaml
@@ -880,8 +873,43 @@ for path in glob.glob("/etc/netplan/*.yaml"):
 print(json.dumps(names))
 PYEOF
 )"
+}
 
-  _write_status_json "$connected" "$conn" "$ip" "$known_ssids_json" "$ap_installed" "$ap_enabled" "$ap_active"
+# write_status_netplan — SSID/IP/AP-active are read fresh every tick (they
+# reflect live, independently-changing network state, e.g. a signal drop
+# with no net_config.json edit involved). known_ssids/ap_enabled come from
+# the CACHED_* globals instead — see refresh_status_cache_netplan() above
+# for why re-deriving those here on every tick was needless disk I/O and
+# two extra python3 interpreter spawns, every 5s, forever.
+write_status_netplan() {
+  local wifi_dev="$1"
+  mkdir -p "$STATUS_DIR"
+  local connected="false" conn="" ip="" ap_installed="false" ap_active="false"
+
+  # installed = hostapd binary present (capability), enabled = net_config.json
+  # says it should be on (persisted intent), active = hostapd actually running
+  # right now — three independent facts, not one collapsed into "active".
+  # Collapsing them (an earlier version of this function did) makes the admin
+  # panel report "not installed" for a fully configured, working AP fallback
+  # any time it's correctly NOT currently active, which is the common case.
+  command -v hostapd >/dev/null 2>&1 && ap_installed="true"
+
+  if ap_hostapd_active; then
+    ap_active="true"
+    conn=""; ip="$AP_IFACE_IP"
+  else
+    if wifi_connected_netplan "$wifi_dev"; then
+      connected="true"
+    fi
+    # `iw` gives a stable, well-documented "SSID: <name>" line — far less
+    # risky to depend on than guessing netplan's JSON status schema.
+    if command -v iw >/dev/null 2>&1; then
+      conn="$(iw dev "$wifi_dev" link 2>/dev/null | awk -F': ' '/^[[:space:]]*SSID:/{print $2; exit}')"
+    fi
+    ip="$(ip -4 -o addr show dev "$wifi_dev" 2>/dev/null | awk '{print $4}' | cut -d/ -f1 | head -n1)"
+  fi
+
+  _write_status_json "$connected" "$conn" "$ip" "$CACHED_KNOWN_SSIDS_JSON" "$ap_installed" "$CACHED_AP_ENABLED" "$ap_active"
 }
 
 _write_status_json() {
@@ -919,16 +947,24 @@ while true; do
     WIFI_DEV="$(detect_wifi_dev "$BACKEND")"
     if [[ -n "$WIFI_DEV" ]]; then
       if [[ -f "$NET_CONFIG_FILE" ]]; then
-        new_hash="$(sha256sum "$NET_CONFIG_FILE" 2>/dev/null | awk '{print $1}')"
-        old_hash=""
-        [[ -f "$APPLIED_HASH_FILE" ]] && old_hash="$(cat "$APPLIED_HASH_FILE")"
-        if [[ -n "$new_hash" && "$new_hash" != "$old_hash" ]]; then
+        # Change detection used to be `sha256sum "$NET_CONFIG_FILE" | awk
+        # ...` compared against a hash saved in $APPLIED_HASH_FILE — every
+        # tick, forever, that's a sha256sum + awk (+ a cat to read the old
+        # hash) spawned just to answer "did this file move." A plain
+        # newer-than mtime comparison is a bash builtin (`-nt`, no fork at
+        # all) and answers the exact same question here, since nothing
+        # else touches $APPLIED_HASH_FILE's mtime except the `touch` right
+        # after a real reconcile below.
+        if [[ ! -f "$APPLIED_HASH_FILE" || "$NET_CONFIG_FILE" -nt "$APPLIED_HASH_FILE" ]]; then
           log_info "net_config.json changed — reconciling ($BACKEND backend)"
           reconcile_wifi "$BACKEND" "$WIFI_DEV"
           if [[ "$BACKEND" == "nmcli" ]]; then
             reconcile_ap_fallback_nmcli "$WIFI_DEV"
           fi
-          echo "$new_hash" > "$APPLIED_HASH_FILE"
+          if [[ "$BACKEND" == "netplan" ]]; then
+            refresh_status_cache_netplan "$WIFI_DEV"
+          fi
+          touch "$APPLIED_HASH_FILE"
         fi
       fi
       # The netplan backend has no separate always-on AP watchdog service

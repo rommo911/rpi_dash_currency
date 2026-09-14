@@ -267,6 +267,12 @@ async function refresh() {
           card.classList.remove('flash');
           void card.offsetWidth;
           card.classList.add('flash');
+          // The card is a persistent node now (not rebuilt every poll),
+          // so 'flash' must come back off once the animation finishes —
+          // dashboard.css's fx-flash rule sets overflow:visible for the
+          // duration (needed so the glow pseudo-element can bleed past
+          // the card's edge), which must not stay applied forever.
+          card.addEventListener('animationend', () => card.classList.remove('flash'), { once: true });
         }
         // appendChild on an existing child MOVES it — cheap no-op when
         // already in the right spot, and keeps DOM order matching

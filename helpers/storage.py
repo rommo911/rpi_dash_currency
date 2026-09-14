@@ -1,6 +1,7 @@
 """data.json / net_config.json persistence, plus the small read-only
 lookups (net status, LAN IP, find-by-code) built on top of them.
 """
+import copy
 import json
 import os
 import socket
@@ -36,6 +37,14 @@ DEFAULT_SETTINGS = {
 
 _DEFAULT_NET_CONFIG = {"wifi": [], "ap_fallback": {"enabled": False, "ssid": "", "password": ""}}
 
+# routes/dashboard.py's /api/data polls load_data() every 5s regardless of
+# whether anything changed — re-reading and re-parsing data.json from the SD
+# card on every one of those requests is needless disk I/O (and wear) for
+# data that only actually changes when an admin saves something. Cached here
+# in memory, keyed by the file's mtime; only touches disk again once it's
+# actually moved (from this process's own save_data() or an external edit).
+_data_cache = {"mtime": None, "data": None}
+
 
 def load_data():
     if not os.path.exists(DATA_FILE):
@@ -46,6 +55,16 @@ def load_data():
         }
         save_data(data)
         return data
+
+    mtime = os.path.getmtime(DATA_FILE)
+    if _data_cache["data"] is not None and _data_cache["mtime"] == mtime:
+        # A deep copy, never the cached object itself: callers (e.g.
+        # routes/admin.py) mutate the dict they get back in place before
+        # calling save_data() on it — handing out the cached object directly
+        # would let an in-progress edit corrupt what every other request
+        # sees before it's even been saved.
+        return copy.deepcopy(_data_cache["data"])
+
     with open(DATA_FILE) as f:
         data = json.load(f)
     dirty = False
@@ -77,7 +96,10 @@ def load_data():
         dirty = True
     if dirty:
         save_data(data)
-    return data
+        mtime = os.path.getmtime(DATA_FILE)
+    _data_cache["mtime"] = mtime
+    _data_cache["data"] = data
+    return copy.deepcopy(data)
 
 
 def save_data(data):
