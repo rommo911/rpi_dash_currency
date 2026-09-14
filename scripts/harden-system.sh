@@ -89,11 +89,8 @@ fi
 
 # ---------------------------------------------------------------------------
 log_info "5/11 Hostname"
-if is_auto; then
   NEW_HOSTNAME="prices-dashboard"
-else
-  read -rp "New hostname (leave blank to keep '$(hostname)'): " NEW_HOSTNAME
-fi
+  read -rp "New hostname (leave blank to keep prices-dashboard): " NEW_HOSTNAME
 if [[ -n "$NEW_HOSTNAME" ]]; then
   if is_raspi_os && command -v raspi-config >/dev/null 2>&1; then
     sudo raspi-config nonint do_hostname "$NEW_HOSTNAME"
