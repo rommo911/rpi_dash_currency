@@ -51,6 +51,8 @@ STATUS_FILE="$STATUS_DIR/status.json"
 APPLIED_HASH_FILE="$STATUS_DIR/applied.sha256"
 APPLIED_SSIDS_FILE="$STATUS_DIR/applied_ssids"
 AP_STARTED_FILE="$STATUS_DIR/ap_started_at"
+DISCONNECTED_SINCE_FILE="$STATUS_DIR/disconnected_since"
+AP_CLIENT_FREE_SINCE_FILE="$STATUS_DIR/ap_client_free_since"
 
 NETPLAN_FILE="/etc/netplan/90-dashboard-wifi.yaml"
 AP_IFACE_IP="192.168.50.1"
@@ -71,13 +73,27 @@ AP_NETWORKD_FILE="/etc/systemd/network/05-dashboard-ap.network"
 # a stale copy around.
 AP_NETWORKD_FILE_LEGACY="/etc/systemd/network/90-dashboard-ap.network"
 
-# Minimum time to stay in AP mode before trying the primary Wi-Fi again.
-# Without this, reconcile_ap_netplan (called every CHECK_INTERVAL tick)
-# would tear the AP down to retry the primary connection on EVERY tick —
-# confirmed live: the AP was only up for the ~5s between ticks and down
-# for the ~25s WIFI_RECONNECT_TIMEOUT retry window on every cycle, so it
-# never stayed up long enough for a phone/laptop to even finish a scan
-# before it vanished again. Now a real dwell period, not a per-tick retry.
+# Minimum time the primary Wi-Fi must be continuously unreachable before
+# the emergency AP is started at all. During this grace window nothing on
+# the interface is touched — wpa_supplicant/networkd already retry on
+# their own, and forcing a reconnect attempt (which tears down and
+# re-applies the interface, see try_reconnect_netplan) on every single
+# CHECK_INTERVAL tick would itself manufacture disconnect/reconnect churn
+# out of what might just be a one-tick blip.
+AP_FALLBACK_DELAY_SECONDS="${AP_FALLBACK_DELAY_SECONDS:-180}"
+
+# Minimum time the AP must have NO associated client before trying the
+# primary Wi-Fi again — counted from the moment the last client leaves,
+# not from when the AP started. A connected client means someone is
+# actively using the emergency AP (to fix Wi-Fi or change the SSID from
+# the admin panel); pulling the radio out from under them mid-fix would
+# defeat the entire point of the fallback. This also still guards the
+# original problem: without SOME dwell, reconcile_ap_netplan (called
+# every CHECK_INTERVAL tick) tore the AP down to retry the primary
+# connection on EVERY tick — confirmed live, the AP was only up for the
+# ~5s between ticks and down for the whole ~25s WIFI_RECONNECT_TIMEOUT
+# retry window on every cycle, so it never stayed up long enough for a
+# phone/laptop to even finish a scan before it vanished again.
 AP_MIN_DWELL_SECONDS="${AP_MIN_DWELL_SECONDS:-300}"
 
 CHECK_INTERVAL="${CHECK_INTERVAL:-5}"
@@ -465,6 +481,18 @@ ap_hostapd_active() {
   systemctl is-active --quiet "$AP_HOSTAPD_UNIT" 2>/dev/null
 }
 
+# ap_client_connected — true if any station is associated to the AP
+# interface right now. Backed by `iw` (installed alongside hostapd by
+# deploy-dashboard.sh for exactly this) rather than hostapd's own control
+# socket, since AP_HOSTAPD_CONF sets no ctrl_interface. If `iw` is somehow
+# missing, fails closed (reports "no client") rather than blocking the
+# dwell timer forever.
+ap_client_connected() {
+  local dev="$1"
+  command -v iw >/dev/null 2>&1 || return 1
+  iw dev "$dev" station dump 2>/dev/null | grep -q '^Station '
+}
+
 # wifi_connected_netplan — a real default route through the device is a
 # stronger signal than link state alone (matches the nmcli path's use of
 # GENERAL.STATE==100, "fully activated," not just "link up").
@@ -515,8 +543,9 @@ ap_firewall_close() {
 start_ap_netplan() {
   local wifi_dev="$1" ssid="$2" password="$3"
   ap_hostapd_active && return 0
-  log_warn "Wi-Fi unavailable after retrying — starting emergency AP ($ssid) on $wifi_dev (staying up at least ${AP_MIN_DWELL_SECONDS}s)"
+  log_warn "Wi-Fi unavailable after retrying — starting emergency AP ($ssid) on $wifi_dev (stays up until client-free for ${AP_MIN_DWELL_SECONDS}s)"
   date +%s > "$AP_STARTED_FILE" 2>/dev/null || true
+  rm -f "$DISCONNECTED_SINCE_FILE"
 
   systemctl stop "netplan-wpa-${wifi_dev}.service" >/dev/null 2>&1 || true
   ip link set "$wifi_dev" down >/dev/null 2>&1 || true
@@ -613,7 +642,7 @@ stop_ap_netplan() {
   local wifi_dev="$1"
   ap_hostapd_active && log_info "Stopping emergency AP to attempt reconnect to primary Wi-Fi"
   systemctl stop "$AP_HOSTAPD_UNIT" >/dev/null 2>&1 || true
-  rm -f "$AP_NETWORKD_FILE" "$AP_NETWORKD_FILE_LEGACY" "$AP_STARTED_FILE"
+  rm -f "$AP_NETWORKD_FILE" "$AP_NETWORKD_FILE_LEGACY" "$AP_STARTED_FILE" "$AP_CLIENT_FREE_SINCE_FILE"
   ap_firewall_close "$wifi_dev"
   networkctl reload >/dev/null 2>&1 || true
   ip addr flush dev "$wifi_dev" >/dev/null 2>&1 || true
@@ -648,14 +677,18 @@ try_reconnect_netplan() {
   return 1
 }
 
-# reconcile_ap_netplan — called every tick. Once the AP is actually up,
-# AP_MIN_DWELL_SECONDS gates any further reconnect attempt: without this,
-# this function tore the AP down to retry the primary connection on
-# EVERY tick (CHECK_INTERVAL, ~5s), leaving it visible for only the ~5s
-# between ticks and down for the whole ~25s retry window on every single
-# cycle — confirmed live, a phone/laptop couldn't even finish a scan
-# before it vanished again. Now it stays up for a real dwell window
-# before trying the primary network again.
+# reconcile_ap_netplan — called every tick. Two independent timers guard
+# against reacting to a single noisy reading, after a real incident where
+# a one-tick blip pushed this box into AP mode (dropping it off the
+# normal LAN entirely):
+#   - AP_FALLBACK_DELAY_SECONDS: the primary connection must be down
+#     continuously for this long before the AP is started at all. Before
+#     that, nothing on the interface is touched — see the "not connected
+#     yet" branch below.
+#   - AP_MIN_DWELL_SECONDS: once the AP is up, see
+#     reconcile_ap_active_netplan below — it only counts down while no
+#     client is associated, so an admin connected to fix Wi-Fi is never
+#     kicked off mid-fix.
 reconcile_ap_netplan() {
   local wifi_dev="$1"
   local -a fields=()
@@ -664,6 +697,7 @@ reconcile_ap_netplan() {
 
   if [[ "$enabled" != "1" || -z "$ssid" || -z "$password" ]]; then
     ap_hostapd_active && stop_ap_netplan "$wifi_dev"
+    rm -f "$DISCONNECTED_SINCE_FILE"
     return
   fi
   if ! command -v hostapd >/dev/null 2>&1; then
@@ -671,21 +705,72 @@ reconcile_ap_netplan() {
     return
   fi
 
-  if wifi_connected_netplan "$wifi_dev" && ! ap_hostapd_active; then
+  if ap_hostapd_active; then
+    reconcile_ap_active_netplan "$wifi_dev" "$ssid" "$password"
+    return
+  fi
+
+  if wifi_connected_netplan "$wifi_dev"; then
+    rm -f "$DISCONNECTED_SINCE_FILE"
     return  # already fine, nothing to do — the common case, checked cheaply first
   fi
 
-  if ap_hostapd_active; then
-    local started_at elapsed
-    started_at="$(cat "$AP_STARTED_FILE" 2>/dev/null || echo 0)"
-    elapsed=$(( $(date +%s) - started_at ))
-    if (( elapsed < AP_MIN_DWELL_SECONDS )); then
-      return  # still within the dwell window — stay in AP mode, don't retry yet
-    fi
+  # Not connected and the AP isn't up yet. Require a sustained outage, not
+  # a single missed tick: during the grace window below, nothing on the
+  # interface is touched at all — wpa_supplicant/networkd already retry
+  # connecting on their own, and try_reconnect_netplan's own teardown (it
+  # flushes the interface's address) on every 5s tick would manufacture
+  # exactly the disconnect/reconnect churn this delay exists to avoid.
+  local now disconnected_since elapsed
+  now="$(date +%s)"
+  if [[ ! -f "$DISCONNECTED_SINCE_FILE" ]]; then
+    echo "$now" > "$DISCONNECTED_SINCE_FILE"
+    log_warn "Primary Wi-Fi lost — waiting up to ${AP_FALLBACK_DELAY_SECONDS}s before starting emergency AP"
+    return
+  fi
+  disconnected_since="$(cat "$DISCONNECTED_SINCE_FILE" 2>/dev/null || echo "$now")"
+  elapsed=$(( now - disconnected_since ))
+  if (( elapsed < AP_FALLBACK_DELAY_SECONDS )); then
+    return  # still within the grace window
   fi
 
   if try_reconnect_netplan "$wifi_dev"; then
     log_info "Wi-Fi reconnected — staying in client mode"
+    rm -f "$DISCONNECTED_SINCE_FILE"
+  else
+    start_ap_netplan "$wifi_dev" "$ssid" "$password"
+  fi
+}
+
+# reconcile_ap_active_netplan — called every tick while the AP is up.
+# AP_MIN_DWELL_SECONDS only counts down while no client is associated,
+# restarting from zero the instant the last one disconnects — a
+# connected client means someone is actively using the emergency AP (to
+# fix Wi-Fi or change the SSID from the admin panel), and pulling the
+# radio out from under them mid-fix would defeat the point of the
+# fallback.
+reconcile_ap_active_netplan() {
+  local wifi_dev="$1" ssid="$2" password="$3"
+  if ap_client_connected "$wifi_dev"; then
+    rm -f "$AP_CLIENT_FREE_SINCE_FILE"
+    return
+  fi
+
+  local now client_free_since elapsed
+  now="$(date +%s)"
+  if [[ ! -f "$AP_CLIENT_FREE_SINCE_FILE" ]]; then
+    echo "$now" > "$AP_CLIENT_FREE_SINCE_FILE"
+    return
+  fi
+  client_free_since="$(cat "$AP_CLIENT_FREE_SINCE_FILE" 2>/dev/null || echo "$now")"
+  elapsed=$(( now - client_free_since ))
+  if (( elapsed < AP_MIN_DWELL_SECONDS )); then
+    return  # no client, but not for long enough yet — stay in AP mode
+  fi
+
+  if try_reconnect_netplan "$wifi_dev"; then
+    log_info "Wi-Fi reconnected — staying in client mode"
+    rm -f "$DISCONNECTED_SINCE_FILE"
   else
     start_ap_netplan "$wifi_dev" "$ssid" "$password"
   fi
