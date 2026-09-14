@@ -58,3 +58,11 @@ MAX_SSID_LEN = 32  # 802.11 SSID byte cap, treated as chars here (ASCII in pract
 MIN_WIFI_PASS_LEN = 8
 MAX_WIFI_PASS_LEN = 63  # WPA2-PSK bounds
 MAX_WIFI_SLOTS = 2
+
+# Dashboard color palettes. Each is a complete look (own dark/light choice
+# baked in, not a separate toggle) — the actual color values live in
+# static/css/dashboard.css under [data-palette="..."]. This list is just
+# the whitelist of valid IDs, shared by helpers/storage.py (defaulting/
+# migration) and routes/admin.py (form validation).
+PALETTE_CHOICES = ["midnight", "emerald", "sunset", "pearl"]
+DEFAULT_PALETTE = "midnight"

@@ -25,6 +25,7 @@ def api_data():
         "subtitle": data["settings"]["subtitle"],
         "show_updated_at": data["settings"]["show_updated_at"],
         "admin_language": data["settings"]["admin_language"],
+        "color_palette": data["settings"]["color_palette"],
         "hostname": socket.gethostname(),
         "ip": get_lan_ip(),
         "app_version": APP_VERSION_STRING,
