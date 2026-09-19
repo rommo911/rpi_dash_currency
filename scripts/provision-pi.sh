@@ -33,9 +33,47 @@ else
   
 fi
 
-if [[ $EUID -eq 0 ]]; then
-  echo "Run this as your normal sudo user (e.g. 'pi'), not as root — it calls sudo where needed."
+if [[ $EUID -ne 0 ]] && ! sudo -v 2>/dev/null; then
+  echo "This needs root or sudo privileges — run as root, or as a user in the sudo group."
   exit 1
+fi
+
+KIOSK_USER="kiosk"
+KIOSK_DEFAULT_PASSWORD="dashboard123"
+
+# Fresh board: neither root nor a normal login is 'kiosk' yet. Create it,
+# then hand the rest of provisioning off to it so every later stage
+# (harden/deploy) already runs as kiosk without repeating this check.
+if [[ "$(id -un)" != "$KIOSK_USER" ]]; then
+  if ! id "$KIOSK_USER" >/dev/null 2>&1; then
+    log_info "Fresh system — creating '$KIOSK_USER' user"
+    sudo adduser --disabled-password --gecos "" "$KIOSK_USER"
+    echo "${KIOSK_USER}:${KIOSK_DEFAULT_PASSWORD}" | sudo chpasswd
+    sudo usermod -aG sudo "$KIOSK_USER"
+    warn "Created '$KIOSK_USER' / password '$KIOSK_DEFAULT_PASSWORD' — change it once logged in (passwd)."
+  fi
+
+  # Copied into kiosk's own home so the switch below can read it no matter
+  # where this was originally scp'd to (e.g. /root, unreadable by kiosk).
+  sudo mkdir -p "/home/$KIOSK_USER"
+  KIOSK_SCRIPT="/home/$KIOSK_USER/provision-pi.sh"
+  sudo install -o "$KIOSK_USER" -g "$KIOSK_USER" -m 755 "${BASH_SOURCE[0]}" "$KIOSK_SCRIPT"
+
+  if [[ $EUID -eq 0 ]] || [[ -t 0 ]]; then
+    log_info "Switching to '$KIOSK_USER' to continue provisioning"
+    HANDOFF=(env AUTO_DEFAULT="$AUTO_DEFAULT" REPO_URL="$REPO_URL" INSTALL_DIR="$INSTALL_DIR" HEADLESS="$HEADLESS" bash "$KIOSK_SCRIPT" "$@")
+    if [[ $EUID -eq 0 ]]; then
+      # Root can always su to a local user without a password.
+      exec su - "$KIOSK_USER" -c "$(printf '%q ' "${HANDOFF[@]}")"
+    else
+      # Non-root: needs an interactive TTY so sudo can re-prompt for a password.
+      exec sudo -u "$KIOSK_USER" -H "${HANDOFF[@]}"
+    fi
+  fi
+
+  echo "Couldn't switch to '$KIOSK_USER' automatically from this session (no TTY to prompt for sudo)."
+  echo "Log in as '$KIOSK_USER' (password: $KIOSK_DEFAULT_PASSWORD) and re-run: bash $KIOSK_SCRIPT"
+  exit 0
 fi
 
 # Detect whether we're already sitting inside a clone of this repo (has a

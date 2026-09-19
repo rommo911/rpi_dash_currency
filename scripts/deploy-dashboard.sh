@@ -63,11 +63,10 @@ else
   fi
 fi
 
-# Ensure kiosk user and home exist before cloning into /home/kiosk
-if ! id kiosk >/dev/null 2>&1; then
-  log_info "Creating kiosk user"
-  sudo adduser --disabled-password --gecos "" kiosk
-  sudo usermod -aG sudo kiosk || true
+# kiosk user creation lives in provision-pi.sh only — this stage just
+# checks it exists, since deploy-dashboard.sh must stay standalone-safe.
+if [[ "$(id -un)" != "kiosk" ]] && ! id kiosk >/dev/null 2>&1; then
+  warn "'kiosk' user not found — run scripts/provision-pi.sh first to create it. Continuing anyway; steps below that need it will fail until it exists."
 fi
 sudo mkdir -p /home/kiosk
 sudo chown "$USER":"$USER" /home/kiosk 2>/dev/null || true

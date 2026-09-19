@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Stage 2/3: user/firewall/SSH/fail2ban/journald hardening, then hands
-# off to deploy-dashboard.sh. AUTO_DEFAULT=true for non-interactive.
+# Stage 2/3: firewall/SSH/fail2ban/journald hardening, then hands off to
+# deploy-dashboard.sh. AUTO_DEFAULT=true for non-interactive.
 
 set -euo pipefail
 
@@ -57,22 +57,11 @@ sudo apt update
 sudo apt full-upgrade -y
 sudo apt autoremove -y
 
-log_info "3/11 Installing security tooling"
+log_info "3/10 Installing security tooling"
 sudo apt install -y ufw fail2ban unattended-upgrades curl git
 
 # ---------------------------------------------------------------------------
-log_info "4/11 Admin user: ensure kiosk user exists"
-# Create a kiosk user unconditionally (idempotent). This keeps paths static
-if ! id kiosk >/dev/null 2>&1; then
-  sudo adduser --disabled-password --gecos "" kiosk
-  sudo usermod -aG sudo kiosk || true
-  log_info "Created user 'kiosk' and added to sudo group"
-else
-  log_info "User 'kiosk' already exists"
-fi
-
-# ---------------------------------------------------------------------------
-log_info "5/11 Hostname"
+log_info "4/10 Hostname"
   NEW_HOSTNAME="prices-dashboard"
   read -rp "New hostname (leave blank to keep prices-dashboard): " NEW_HOSTNAME
 if [[ -n "$NEW_HOSTNAME" ]]; then
@@ -85,7 +74,7 @@ if [[ -n "$NEW_HOSTNAME" ]]; then
 fi
 
 # ---------------------------------------------------------------------------
-log_info "6/11 Timezone and NTP"
+log_info "5/10 Timezone and NTP"
 sudo timedatectl set-timezone Asia/Damascus
 # set-ntp true syncs now AND persists — timesyncd auto-starts on every
 # future boot, not a one-shot sync.
@@ -93,7 +82,7 @@ sudo timedatectl set-ntp true
 timedatectl status | grep -E 'Time zone|NTP service|System clock synchronized' || true
 
 # ---------------------------------------------------------------------------
-log_info "7/11 Firewall (ufw)"
+log_info "6/10 Firewall (ufw)"
 ask "Dashboard port to allow through the firewall [${APP_PORT}]: " "$APP_PORT" APP_PORT
 ask "Admin HTTPS port to allow through the firewall [${HTTPS_PORT}]: " "$HTTPS_PORT" HTTPS_PORT
 ask "Restrict dashboard/SSH access to a LAN subnet (e.g. 192.168.1.0/24)? Leave blank to allow from anywhere: " "" LAN_SUBNET
@@ -113,7 +102,7 @@ fi
 sudo ufw --force enable
 
 # ---------------------------------------------------------------------------
-log_info "8/11 Hardening SSH (root login disabled; password auth kept ON as requested)"
+log_info "7/10 Hardening SSH (root login disabled; password auth kept ON as requested)"
 # Drop-in under sshd_config.d/, not a sed edit — Debian's sshd_config
 # already Includes that directory, so this wins without touching lines we don't own.
 install_file "$FILES_DIR/ssh/currency-dashboard-hardening.conf" \
@@ -121,13 +110,13 @@ install_file "$FILES_DIR/ssh/currency-dashboard-hardening.conf" \
 sudo systemctl restart ssh 2>/dev/null || sudo systemctl restart sshd
 
 # ---------------------------------------------------------------------------
-log_info "9/11 fail2ban for SSH"
+log_info "8/10 fail2ban for SSH"
 install_file "$FILES_DIR/fail2ban/sshd-jail.local" /etc/fail2ban/jail.local
 sudo systemctl enable --now fail2ban
 sudo systemctl restart fail2ban
 
 # ---------------------------------------------------------------------------
-log_info "10/11 Automatic security updates + system-wide log limits (errors only, 1 week max)"
+log_info "9/10 Automatic security updates + system-wide log limits (errors only, 1 week max)"
 install_file "$FILES_DIR/apt/51unattended-upgrades-security" /etc/apt/apt.conf.d/51unattended-upgrades-security
 install_file "$FILES_DIR/apt/20auto-upgrades" /etc/apt/apt.conf.d/20auto-upgrades
 sudo systemctl enable --now unattended-upgrades
@@ -139,7 +128,7 @@ install_file "$FILES_DIR/journald/10-currency-dashboard-limits.conf" \
 sudo systemctl restart systemd-journald
 
 # ---------------------------------------------------------------------------
-log_info "11/11 Optional: emergency Wi-Fi AP fallback"
+log_info "10/10 Optional: emergency Wi-Fi AP fallback"
 if is_auto; then
   DO_AP_FALLBACK="y"
 else
