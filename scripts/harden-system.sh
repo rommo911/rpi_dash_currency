@@ -62,8 +62,8 @@ sudo apt install -y ufw fail2ban unattended-upgrades curl git
 
 # ---------------------------------------------------------------------------
 log_info "4/10 Hostname"
-  NEW_HOSTNAME="prices-dashboard"
-  read -rp "New hostname (leave blank to keep prices-dashboard): " NEW_HOSTNAME
+  read -rp "New hostname (leave blank to use prices-dashboard): " NEW_HOSTNAME
+  NEW_HOSTNAME="${NEW_HOSTNAME:-prices-dashboard}"
 if [[ -n "$NEW_HOSTNAME" ]]; then
   if is_raspi_os && command -v raspi-config >/dev/null 2>&1; then
     sudo raspi-config nonint do_hostname "$NEW_HOSTNAME"
