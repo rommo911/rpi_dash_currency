@@ -1,5 +1,4 @@
 """Input validation for admin-submitted text, prices, and Wi-Fi fields."""
-import math
 import re
 import unicodedata
 
@@ -19,19 +18,16 @@ def clean_text(raw, max_len):
 
 
 def parse_price(raw):
-    """None unless a valid, finite, non-negative, bounded number."""
+    """None unless a whole, non-negative, bounded number (no decimals)."""
     if raw is None:
         return None
     raw = raw.strip()
     if not raw or len(raw) > MAX_PRICE_RAW_LEN:
         return None
-    if not re.fullmatch(r"-?\d*\.?\d+(?:[eE][+-]?\d+)?", raw):
+    if not re.fullmatch(r"\d+", raw):
         return None
-    try:
-        value = float(raw)
-    except ValueError:
-        return None
-    if not math.isfinite(value) or value < 0 or value > MAX_PRICE_VALUE:
+    value = int(raw)
+    if value > MAX_PRICE_VALUE:
         return None
     return value
 

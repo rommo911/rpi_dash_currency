@@ -30,7 +30,7 @@ setTimeout(showHostInfo, 120000);
 
 function fmt(n) {
   if (n === null || n === undefined) return '—';
-  return Number(n).toLocaleString(undefined, {minimumFractionDigits: 1, maximumFractionDigits: 2});
+  return Number(n).toLocaleString(undefined, {maximumFractionDigits: 0});
 }
 
 function esc(s) {

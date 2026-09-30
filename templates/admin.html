@@ -74,7 +74,7 @@
       <div class="inline">
         <input type="text" name="name_{{ c.code }}" value="{{ c.name }}" placeholder="{{ t.name_ph }}" maxlength="{{ max_name_len }}" required>
         <input type="text" name="symbol_{{ c.code }}" value="{{ c.symbol }}" placeholder="{{ t.symbol_ph }}" maxlength="{{ max_symbol_len }}">
-        <input type="text" inputmode="decimal" name="price_{{ c.code }}" value="{{ c.price }}" oninput="filterDecimalInput(this)" placeholder="{{ t.price_ph }}" required>
+        <input type="text" inputmode="numeric" name="price_{{ c.code }}" value="{{ c.price|round|int }}" oninput="filterDecimalInput(this)" placeholder="{{ t.price_ph }}" required>
         <label class="chk"><input type="checkbox" name="enabled_{{ c.code }}" {% if c.enabled %}checked{% endif %}> {{ t.enabled_label }}</label>
       </div>
       <button type="submit" form="delete-{{ c.code }}" class="delete" onclick="return confirm('{{ t.confirm_remove.format(code=c.code) }}');">{{ t.remove_btn }}</button>
@@ -92,7 +92,7 @@
         <input type="text" name="code" placeholder="{{ t.code_ph }}" maxlength="{{ max_code_len }}" required>
         <input type="text" name="name" placeholder="{{ t.name_req_ph }}" maxlength="{{ max_name_len }}" required>
         <input type="text" name="symbol" placeholder="{{ t.symbol_opt_ph }}" maxlength="{{ max_symbol_len }}">
-        <input type="text" inputmode="decimal" name="price" placeholder="{{ t.price_req_ph }}" oninput="filterDecimalInput(this)" required>
+        <input type="text" inputmode="numeric" name="price" placeholder="{{ t.price_req_ph }}" oninput="filterDecimalInput(this)" required>
       </div>
       <div class="flag-choice">
         <label><input type="radio" name="flag_source" value="auto" checked> {{ t.flag_auto }}</label>
