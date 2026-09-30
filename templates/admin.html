@@ -38,6 +38,9 @@
         <label><input type="radio" name="mode" value="url" {% if source.mode == 'url' %}checked{% endif %}> {{ t.source_url }}</label>
       </div>
       <input type="text" name="url" value="{{ source.url }}" placeholder="{{ t.source_url_ph }}" maxlength="300" style="width:100%;margin:10px 0;">
+      <input type="password" name="token" autocomplete="off" placeholder="{{ t.source_token_saved_ph if source.token else t.source_token_ph }}" maxlength="300" style="width:100%;margin-bottom:10px;">
+      {% if source.token %}<label class="chk"><input type="checkbox" name="clear_token"> {{ t.source_token_clear }}</label>{% endif %}
+      <label class="chk"><input type="checkbox" name="insecure" {% if source.insecure %}checked{% endif %}> {{ t.source_insecure }}</label>
       {% if source.mode == 'url' %}<p class="sub">{{ t.source_version }}: {{ source.version }} · {{ t.source_status }}: {{ source.last_status or '-' }}</p>{% endif %}
       <button type="submit" name="action" value="save" class="save">{{ t.source_save }}</button>
       <button type="submit" name="action" value="test" class="save">{{ t.source_test }}</button>

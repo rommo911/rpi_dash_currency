@@ -29,7 +29,7 @@ def admin_page():
         "admin.html",
         currencies=data["currencies"],
         settings=data["settings"],
-        source=get_source(data),
+        source=get_source(),
         lang=lang,
         t=t,
         msg=request.args.get("msg"),

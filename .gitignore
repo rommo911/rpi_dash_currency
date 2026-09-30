@@ -9,3 +9,6 @@ auto-update.check-now
 net_config.json
 reboot.request
 logs/
+source.json
+data.local.json
+data.remote.json
