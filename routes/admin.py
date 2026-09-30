@@ -12,6 +12,7 @@ from config import (
 from core import app
 from helpers.flags import fetch_suggested_flag, save_uploaded_flag, delete_flag_file
 from helpers.security import check_csrf, csrf_token, require_admin_auth
+from helpers.remote import get_source
 from helpers.storage import find_currency, load_data, save_data
 from helpers.validation import clean_text, parse_price
 from i18n import TRANSLATIONS, get_translations
@@ -28,6 +29,7 @@ def admin_page():
         "admin.html",
         currencies=data["currencies"],
         settings=data["settings"],
+        source=get_source(data),
         lang=lang,
         t=t,
         msg=request.args.get("msg"),

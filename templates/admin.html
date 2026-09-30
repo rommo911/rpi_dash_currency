@@ -28,6 +28,23 @@
   {% if msg %}<div class="msg ok">{{ msg }}</div>{% endif %}
   {% if error %}<div class="msg err">{{ error }}</div>{% endif %}
 
+  <div class="settings-card">
+    <h2>{{ t.source_heading }}</h2>
+    <p class="sub">{{ t.source_sub }}</p>
+    <form method="post" action="{{ url_for('admin_source') }}">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <div class="flag-choice">
+        <label><input type="radio" name="mode" value="manual" {% if source.mode != 'url' %}checked{% endif %}> {{ t.source_manual }}</label>
+        <label><input type="radio" name="mode" value="url" {% if source.mode == 'url' %}checked{% endif %}> {{ t.source_url }}</label>
+      </div>
+      <input type="text" name="url" value="{{ source.url }}" placeholder="{{ t.source_url_ph }}" maxlength="300" style="width:100%;margin:10px 0;">
+      {% if source.mode == 'url' %}<p class="sub">{{ t.source_version }}: {{ source.version }} · {{ t.source_status }}: {{ source.last_status or '-' }}</p>{% endif %}
+      <button type="submit" name="action" value="save" class="save">{{ t.source_save }}</button>
+      <button type="submit" name="action" value="test" class="save">{{ t.source_test }}</button>
+      <button type="submit" name="action" value="fetch" class="save">{{ t.source_fetch }}</button>
+    </form>
+  </div>
+
   <!-- Standalone per-currency delete forms; the Remove button below links
        via form="..." (HTML5) instead of nesting inside the big save-all form. -->
   {% for c in currencies %}

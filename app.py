@@ -13,7 +13,9 @@ from helpers.security import _port_suffix, redirect_admin_to_https, set_security
 
 # Imported for the side effect of registering @app.route handlers on the
 # shared `app` above — the names themselves are never used directly.
-from routes import admin, admin_system, dashboard  # noqa: F401
+from routes import admin, admin_source, admin_system, dashboard  # noqa: F401
+
+from helpers.remote import start_poller  # noqa: E402
 
 app.before_request(redirect_admin_to_https)
 app.after_request(set_security_headers)
@@ -37,6 +39,7 @@ if __name__ == "__main__":
         except OSError as e:
             print(f"Could not start HTTPS listener on port {config.HTTPS_PORT}: {e}")
 
+    start_poller()
     config.HTTPS_ENABLED = https_server is not None
     if config.HTTPS_ENABLED:
         print(f"Admin panel (HTTPS): https://{socket.gethostname()}{_port_suffix(config.HTTPS_PORT, 443)}/admin")
