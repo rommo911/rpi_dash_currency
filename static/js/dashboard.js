@@ -302,6 +302,8 @@ async function refresh() {
     }
 
     lastHostInfo = { hostname: d.hostname || '', ip: d.ip || '' };
+    // Not behind the updated_at check below: it flips without any data change.
+    document.getElementById('sync-dot').hidden = !d.sync_failing;
 
     if (d.updated_at === lastUpdatedAt) {
       return; // nothing changed since last poll — skip the re-render

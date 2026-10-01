@@ -341,9 +341,21 @@ body.fx-glow .card .value {
   color: var(--text-dim);
   font-size: clamp(0.8rem, 1.4vh, 1.1rem);
 }
+/* Red dot: the remote data source has been failing for over a minute. */
+.sync-dot {
+  position: fixed;
+  left: 14px;
+  bottom: 14px;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: #e5333a;
+  box-shadow: 0 0 6px rgba(229, 51, 58, 0.7);
+}
+.sync-dot[hidden] { display: none; }
 .hostinfo {
   position: fixed;
-  left: 16px;
+  left: 36px;
   bottom: 14px;
   font-size: 0.85rem;
   /* Fixed light-on-dark: this chip's bg is always dark, unlike Pearl's page. */

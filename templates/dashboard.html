@@ -12,6 +12,7 @@
 
   <div class="footer" id="footer" {% if not settings.show_updated_at %}hidden{% endif %}><div id="updated-at">Loading&hellip;</div></div>
 </div>
+<div class="sync-dot" id="sync-dot" hidden title="Remote data source unreachable"></div>
 <div class="hostinfo" id="hostinfo"></div>
 
 <script>window.PAGE_LOAD_VERSION = {{ version | tojson }};</script>

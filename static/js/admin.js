@@ -16,6 +16,24 @@ function filterDecimalInput(el) {
     const urlMode = document.querySelector('input[name="mode"]:checked')?.value === 'url';
     document.querySelectorAll('[data-url-only]').forEach(el => { el.disabled = !urlMode; });
   }
-  radios.forEach(r => r.addEventListener('change', sync));
+  // Clicking a mode switches immediately: the server swaps in that mode's last
+  // saved data. Unsaved edits in the main form would be lost, so ask first.
+  const main = document.querySelector('form[action$="/admin/save-all"]');
+  let dirty = false;
+  if (main) main.addEventListener('input', () => { dirty = true; });
+  const current = document.querySelector('input[name="mode"]:checked')?.value;
+  radios.forEach(r => r.addEventListener('change', () => {
+    sync();
+    if (dirty && !confirm(document.body.dataset.discardMsg || 'Unsaved changes will be lost. Switch anyway?')) {
+      document.querySelector(`input[name="mode"][value="${current}"]`).checked = true;
+      sync();
+      return;
+    }
+    const form = r.form;
+    const action = document.createElement('input');
+    action.type = 'hidden'; action.name = 'action'; action.value = 'switch';
+    form.appendChild(action);
+    form.submit();
+  }));
   sync();
 })();

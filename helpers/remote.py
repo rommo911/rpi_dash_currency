@@ -28,6 +28,8 @@ SOURCE_FILE = os.path.join(APP_DIR, "source.json")
 SNAPSHOTS = {"manual": os.path.join(APP_DIR, "data.local.json"), "url": os.path.join(APP_DIR, "data.remote.json")}
 SCHEMA = 1
 POLL_SECONDS = 60
+RETRY_SECONDS = 15  # while the last fetch failed, try again sooner
+FAIL_DOT_SECONDS = 60  # show the kiosk's red dot once fetches have been failing this long
 MAX_PAYLOAD_BYTES = 256 * 1024
 MAX_FLAG_BYTES = 500 * 1024
 MAX_CURRENCIES = 40
@@ -44,7 +46,7 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
 
 
 def get_source():
-    src = {"mode": "manual", "url": "", "token": "", "insecure": False, "version": 0, "last_sync": 0, "last_status": ""}
+    src = {"mode": "manual", "url": "", "token": "", "insecure": False, "version": 0, "last_sync": 0, "last_status": "", "fail_since": 0}
     try:
         with open(SOURCE_FILE, encoding="utf-8") as f:
             src.update(json.load(f))
@@ -264,6 +266,7 @@ def switch_mode(new_mode):
         elif new_mode == "url":
             src["version"] = 0  # nothing remote known yet: first sync must apply
         src["mode"] = new_mode
+        src["fail_since"] = 0  # a mode change starts a clean slate
         save_source(src)
         return src
 
@@ -289,19 +292,31 @@ def sync(force=False, apply=True, src=None):
             msg = f"up to date (version {saved['version']})"
         saved["last_sync"] = int(time.time())
         saved["last_status"] = ("error: " if err else "") + msg
+        if apply and src is None:  # a real sync (poller / Fetch / Save), not the Test button
+            saved["fail_since"] = (saved.get("fail_since") or int(time.time())) if err else 0
         save_source(saved)
         return err is None, msg
 
 
+def sync_failing():
+    """True when URL mode has been failing to fetch for FAIL_DOT_SECONDS or more."""
+    src = get_source()
+    return src["mode"] == "url" and bool(src.get("fail_since")) and time.time() - src["fail_since"] >= FAIL_DOT_SECONDS
+
+
 def _loop():
+    delay = POLL_SECONDS
     while True:
-        time.sleep(POLL_SECONDS)
+        time.sleep(delay)
+        delay = POLL_SECONDS
         try:
             src = get_source()
             if src["mode"] == "url" and src["url"]:
-                sync()
+                ok, _ = sync()
+                if not ok:
+                    delay = RETRY_SECONDS
         except Exception:  # noqa: BLE001 - keep the poller alive no matter what
-            pass
+            delay = RETRY_SECONDS
 
 
 def start_poller():

@@ -84,5 +84,21 @@ class PriceTest(unittest.TestCase):
             self.assertIsNone(parse_price(bad), bad)
 
 
+class SyncFailingTest(unittest.TestCase):
+    def test_dot_only_after_a_minute_of_failures_in_url_mode(self):
+        import time
+        from helpers import remote
+        real = remote.get_source
+        try:
+            now = int(time.time())
+            for mode, fail_since, expected in (("url", now - 30, False), ("url", now - 61, True),
+                                               ("url", 0, False), ("manual", now - 600, False)):
+                remote.get_source = lambda m=mode, f=fail_since: {"mode": m, "fail_since": f}
+                self.assertEqual(remote.sync_failing(), expected, (mode, fail_since))
+        finally:
+            remote.get_source = real
+        self.assertEqual((remote.POLL_SECONDS, remote.RETRY_SECONDS, remote.FAIL_DOT_SECONDS), (60, 15, 60))
+
+
 if __name__ == "__main__":
     unittest.main()

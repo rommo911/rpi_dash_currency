@@ -24,6 +24,11 @@ def admin_source():
 
     action = request.form.get("action", "save")
     mode = "url" if request.form.get("mode") == "url" else "manual"
+    if action == "switch":
+        # Radio clicked: swap in that mode's last known data right away (no URL
+        # validation, no fetch — the poller / Fetch button refreshes URL data).
+        remote.switch_mode(mode)
+        return _back(True, t["source_switched"])
     saved = remote.get_source()
     cand = dict(saved)
     if mode == "manual":
