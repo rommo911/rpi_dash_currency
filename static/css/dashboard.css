@@ -130,25 +130,27 @@ body {
 }
 /* Two rows: each block gets half the height, so headers and gaps shrink. */
 #rows.two .row-block { position: relative; }
-#rows.two .row-block + .row-block { margin-top: 9vh; }
+#rows.two { --row-gap: 9vh; }  /* space between the two rows; the divider and the JS sizing follow it */
+#rows.two .row-block + .row-block { margin-top: var(--row-gap); }
 /* Fading divider centred in the gap between the two rows. */
 #rows.two .row-block + .row-block::before {
   content: '';
   position: absolute;
-  top: -2.875vh;  /* half of the gap above */
+  top: calc(var(--row-gap) / -2);  /* centred in the gap above */
   left: 8%;
   right: 8%;
-  height: 2px;
-  background: linear-gradient(90deg, transparent, var(--card-border) 25%, var(--card-border) 75%, transparent);
+  height: 4px;
+  border-radius: 2px;
+  background: linear-gradient(90deg, transparent, rgba(var(--accent-rgb), 0.55) 25%, rgba(var(--accent-rgb), 0.55) 75%, transparent);
   pointer-events: none;
 }
 /* Row titles get the room the (tighter) cards give up. layoutCompactCards()
    in dashboard.js mirrors these numbers (TITLE_*), keep them in sync. */
 #rows.two .header { min-height: 0; gap: 0.6vh; }
-#rows.two .header h1 { font-size: clamp(1.45rem, 6.3vh, 4.32rem); }
-#rows.two .header .sub { font-size: clamp(0.9rem, 3.06vh, 2.16rem); margin-top: 0.5vh; }
+#rows.two .header h1 { font-size: clamp(1.3rem, 5.7vh, 3.9rem); }
+#rows.two .header .sub { font-size: clamp(0.85rem, 2.75vh, 1.95rem); margin-top: 0.5vh; }
 #rows.two .header .sub:empty { display: none; }
-#rows.two .grid-wrap { margin-top: 1.2vh; margin-bottom: 0; }
+#rows.two .grid-wrap { margin-top: 2.9vh; margin-bottom: 0; }  /* space under the subtitle */
 #rows.two .grid { gap: 3.2vh 2.5vw; }
 /* Two rows: flag + (code over name) as one tight group centred in the card,
    the price underneath with its own spacing. */

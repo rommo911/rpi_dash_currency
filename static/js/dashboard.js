@@ -148,10 +148,10 @@ function layoutGrid(st) {
 // numbers below in sync with `#rows.two` in dashboard.css.
 const TWO_GAP_X = 0.025, TWO_GAP_Y = 0.032;
 const REF_GAP_X = 0.015, REF_GAP_Y = 0.025;
-// Gap between the two rows beyond the 5vh the text sizes were tuned with
-// (#rows.two .row-block + .row-block in the CSS is 5.75vh): each row block loses
-// half of it, which must not shrink the text.
-const ROW_GAP_EXTRA_VH = 0.0075;
+// The text sizes were tuned with a 5vh gap between the rows; any extra gap
+// (--row-gap in the CSS, read from the DOM) is taken from the row blocks, half
+// each, and must not shrink the text.
+const REF_ROW_GAP = 0.05;
 const FLAG_SCALE = 0.8;       // flag is 20% smaller than the reference size
 const CARD_MAX_ASPECT = 1.8;  // card width <= 1.8 x height
 
@@ -169,7 +169,8 @@ function layoutCompactCards(st, grid, cellW, cellH, cols, rows, gapX, gapY) {
     + parseFloat(getComputedStyle(st.wrap).marginTop);
   // What this cell would measure in the reference layout.
   const refW = cellW + (gapX - W * REF_GAP_X) * (cols - 1) / cols;
-  const refH = cellH + ((gapY - H * REF_GAP_Y) * (rows - 1) + (header - refHeaderBlock(H)) + H * ROW_GAP_EXTRA_VH / 2) / rows;
+  const rowGap = rowStates[1] ? parseFloat(getComputedStyle(rowStates[1].block).marginTop) : 0;
+  const refH = cellH + ((gapY - H * REF_GAP_Y) * (rows - 1) + (header - refHeaderBlock(H)) + (rowGap - H * REF_ROW_GAP) / 2) / rows;
 
   const padRef = Math.min(refW, refH) * 0.07;
   const innerW = Math.max(40, refW - padRef * 2);
