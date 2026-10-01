@@ -17,6 +17,22 @@ DEFAULT_CURRENCIES = [
     {"code": "TRY", "name": "Turkish Lira", "symbol": "₺", "price": 1, "flag": "/static/flags/tr.png", "enabled": True},
 ]
 
+ROWS = 2
+# Per-row card limits live here, not config.py: config.py is a local runtime
+# file that OTA updates must not depend on (an old copy would lack new names).
+MIN_ROW_CURRENCIES = 2
+MAX_ROW_CURRENCIES = 4
+
+
+def default_rows():
+    """Row 1 = today's default list (3 cards), row 2 = disabled, ready to switch on."""
+    cur = [dict(c) for c in DEFAULT_CURRENCIES]
+    return [
+        {"enabled": True, "title": "Prices Dashboard", "subtitle": "Current prices", "currencies": cur[:3]},
+        {"enabled": False, "title": "", "subtitle": "", "currencies": [cur[1], cur[2], cur[3]]},
+    ]
+
+
 DEFAULT_SETTINGS = {
     "title": "Prices Dashboard",
     "subtitle": "Current prices",
@@ -38,13 +54,58 @@ _DEFAULT_NET_CONFIG = {"wifi": [], "ap_fallback": {"enabled": False, "ssid": "",
 _data_cache = {"mtime": None, "data": None}
 
 
+def invalidate_cache():
+    _data_cache.update(mtime=None, data=None)
+
+
+def mirror_legacy(data):
+    """Old code (and old dashboards pulling this file's shape) reads the flat
+    `currencies` + settings.title/subtitle: keep them equal to the first enabled row."""
+    first = next((r for r in data["rows"] if r["enabled"]), data["rows"][0])
+    data["settings"]["title"] = first["title"]
+    data["settings"]["subtitle"] = first["subtitle"]
+    data["currencies"] = first["currencies"]
+
+
+def normalize_rows(data):
+    """Make data["rows"] exactly ROWS well-formed rows. Files without `rows`
+    (every pre-two-row install) become row 1 = old list, row 2 = disabled.
+    Returns True if anything changed."""
+    before = json.dumps(data.get("rows"), sort_keys=True)
+    rows = data.get("rows")
+    if not isinstance(rows, list) or not rows:
+        st = data["settings"]
+        first = {"enabled": True, "title": st.get("title", ""), "subtitle": st.get("subtitle", ""),
+                 "currencies": data.get("currencies") or []}
+        # Row 2 starts as a disabled copy of row 1 (as many cards as fit), ready to edit.
+        second = copy.deepcopy(first)
+        second["enabled"] = False
+        second["currencies"] = second["currencies"][:MAX_ROW_CURRENCIES]
+        rows = [first, second]
+    out = []
+    for r in rows[:ROWS]:
+        r = r if isinstance(r, dict) else {}
+        out.append({"enabled": bool(r.get("enabled", False)), "title": str(r.get("title") or ""),
+                    "subtitle": str(r.get("subtitle") or ""),
+                    "currencies": [c for c in (r.get("currencies") or []) if isinstance(c, dict) and c.get("code")]})
+    while len(out) < ROWS:
+        out.append({"enabled": False, "title": "", "subtitle": "", "currencies": []})
+    if not any(r["enabled"] for r in out):
+        out[0]["enabled"] = True
+    data["rows"] = out
+    mirror_legacy(data)
+    return json.dumps(out, sort_keys=True) != before
+
+
 def load_data():
     if not os.path.exists(DATA_FILE):
         data = {
-            "currencies": DEFAULT_CURRENCIES,
+            "currencies": [],
             "settings": dict(DEFAULT_SETTINGS),
+            "rows": default_rows(),
             "updated_at": int(time.time()),
         }
+        mirror_legacy(data)
         save_data(data)
         return data
 
@@ -83,6 +144,8 @@ def load_data():
     if data["settings"].get("color_palette") not in PALETTE_CHOICES:
         data["settings"]["color_palette"] = DEFAULT_PALETTE
         dirty = True
+    if normalize_rows(data):
+        dirty = True
     if dirty:
         save_data(data)
         mtime = os.path.getmtime(DATA_FILE)
@@ -92,9 +155,13 @@ def load_data():
 
 
 def save_data(data):
+    if "rows" in data:
+        mirror_legacy(data)
     data["updated_at"] = int(time.time())
     with open(DATA_FILE, "w") as f:
         json.dump(data, f, indent=2)
+    # mtime has coarse resolution: two writes in one tick would look unchanged.
+    _data_cache.update(mtime=None, data=None)
 
 
 def load_net_config():
@@ -146,8 +213,9 @@ def get_lan_ip():
         s.close()
 
 
-def find_currency(data, code):
-    for c in data["currencies"]:
+def find_currency(data, row, code):
+    """Currency `code` inside row index `row`, or None. Codes are unique per row, not across rows."""
+    for c in data["rows"][row]["currencies"]:
         if c["code"] == code:
             return c
     return None

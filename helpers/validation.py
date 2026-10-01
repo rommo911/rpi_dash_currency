@@ -17,16 +17,22 @@ def clean_text(raw, max_len):
     return cleaned
 
 
+def norm_price(value):
+    """Round to 2 decimals; a whole value stays an int so it prints without ".0"."""
+    value = round(float(value), 2)
+    return int(value) if value.is_integer() else value
+
+
 def parse_price(raw):
-    """None unless a whole, non-negative, bounded number (no decimals)."""
+    """None unless a non-negative, bounded number with at most 2 decimals."""
     if raw is None:
         return None
     raw = raw.strip()
-    if not raw or len(raw) > MAX_PRICE_RAW_LEN:
+    if not raw or len(raw) > MAX_PRICE_RAW_LEN + 3:  # + ".dd"
         return None
-    if not re.fullmatch(r"\d+", raw):
+    if not re.fullmatch(r"\d+(\.\d{1,2})?", raw):
         return None
-    value = int(raw)
+    value = norm_price(raw)
     if value > MAX_PRICE_VALUE:
         return None
     return value

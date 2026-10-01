@@ -8,12 +8,7 @@
 </head>
 <body class="{% if settings.fx_glass %}fx-glass {% endif %}{% if settings.fx_scan %}fx-scan {% endif %}{% if settings.fx_flash %}fx-flash {% endif %}{% if settings.fx_glow %}fx-glow{% endif %}">
 <div class="screen">
-  <div class="header">
-    <h1 id="dash-title">{{ settings.title }}</h1>
-    <div class="sub" id="dash-subtitle">{{ settings.subtitle }}</div>
-  </div>
-
-  <div id="grid-wrap"></div>
+  <div id="rows"></div>
 
   <div class="footer" id="footer" {% if not settings.show_updated_at %}hidden{% endif %}><div id="updated-at">Loading&hellip;</div></div>
 </div>

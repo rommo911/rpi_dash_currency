@@ -1,15 +1,14 @@
-const MAX_DISPLAYED_CURRENCIES = 5;
+const MAX_DISPLAYED_CURRENCIES = 4; // per row
 const PAGE_LOAD_VERSION = window.PAGE_LOAD_VERSION;
 
 let lastUpdatedAt = null;
-let lastCount = 0;
 let lastHostInfo = { hostname: '', ip: '' };
-let lastPrices = {}; // code -> price, for the update-flash effect
+let lastPrices = {}; // "row:code" -> price, for the update-flash effect
 
-// code -> card element, kept across renders instead of rebuilding all
-// cards from scratch on every poll (was a visible stutter on weak GPUs).
-const cardEls = new Map();
-let currentValueSize = 0; // px — last computed by layoutGrid(), reused by fitValueText()
+// One entry per visible row: {block, titleEl, subEl, wrap, grid, cardEls, count, valueSize}.
+// cardEls (code -> card element) is kept across renders instead of rebuilding
+// all cards from scratch on every poll (was a visible stutter on weak GPUs).
+let rowStates = [];
 
 let hostInfoShown = false;
 
@@ -30,7 +29,7 @@ setTimeout(showHostInfo, 120000);
 
 function fmt(n) {
   if (n === null || n === undefined) return '—';
-  return Number(n).toLocaleString(undefined, {maximumFractionDigits: 0});
+  return Number(n).toLocaleString(undefined, {minimumFractionDigits: 0, maximumFractionDigits: 2});
 }
 
 function esc(s) {
@@ -78,31 +77,43 @@ function bestGridSplit(n, w, h, gapX, gapY) {
   return best || { cols: 1, rows: 1, cellSize: Math.min(w, h) };
 }
 
-// fitValueText — sizes one price to fit on one line. Uses currentValueSize
-// from the last layoutGrid() call rather than recomputing grid geometry.
-function fitValueText(valueEl) {
+// fitValueText — sizes one price to fit on one line. `size` is the row's
+// valueSize from its last layoutGrid() call rather than recomputed geometry.
+function fitValueText(valueEl, size) {
   const textLength = Math.max(1, valueEl.textContent.trim().length);
-  const width = valueEl.getBoundingClientRect().width;
+  // The card's inner width (not the element's own: in two-row mode the price
+  // row spans only the flag+text group, which is narrower than the card).
+  const card = valueEl.parentElement;
+  const cs = getComputedStyle(card);
+  const width = card.getBoundingClientRect().width
+    - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight)
+    - parseFloat(cs.borderLeftWidth) - parseFloat(cs.borderRightWidth);
   const fittedSize = width / textLength * 1.55;
-  valueEl.style.fontSize = Math.min(currentValueSize, fittedSize) + 'px';
+  valueEl.style.fontSize = Math.min(size, fittedSize) + 'px';
 }
 
-// layoutGrid — full grid + card resize. Only on card-count change or
-// resize, not every poll — see refresh()'s structuralChange check.
-function layoutGrid() {
-  const gridWrap = document.getElementById('grid-wrap');
-  const grid = gridWrap.querySelector('.grid');
-  if (!grid || lastCount === 0) return;
-  const rect = gridWrap.getBoundingClientRect();
-  const gapX = window.innerWidth * 0.02;
-  const gapY = window.innerHeight * 0.02;
-  const { cols, rows, cellSize } = bestGridSplit(lastCount, rect.width, rect.height, gapX, gapY);
+// layoutGrid — full grid + card resize for ONE row. Only on card-count
+// change or resize, not every poll — see refresh()'s structuralChange check.
+function layoutGrid(st) {
+  const { grid, wrap, count } = st;
+  if (!grid || count === 0) return;
+  const twoRows = rowStates.length > 1;
+  const rect = wrap.getBoundingClientRect();
+  // Same gaps as the CSS (#rows.two .grid) so the cell math matches reality.
+  const gapX = window.innerWidth * (twoRows ? 0.015 : 0.02);
+  const gapY = window.innerHeight * (twoRows ? 0.025 : 0.02);
+  const { cols, rows, cellSize } = bestGridSplit(count, rect.width, rect.height, gapX, gapY);
   grid.style.gridTemplateColumns = `repeat(${cols}, 1fr)`;
   grid.style.gridTemplateRows = `repeat(${rows}, 1fr)`;
 
+  if (twoRows) {
+    layoutCompactCards(st, grid, (rect.width - gapX * (cols - 1)) / cols, (rect.height - gapY * (rows - 1)) / rows);
+    return;
+  }
+
   // Budgets real pixels (padding/gaps first) — guessing fractions of
   // cellSize let digits get clipped at some sizes.
-  const compactLayout = lastCount <= 2;
+  const compactLayout = count <= 2;
   const cardPad = cellSize * (compactLayout ? 0.045 : 0.075);
   const cardGap = cellSize * (compactLayout ? 0.025 : 0.055);
   grid.style.setProperty('--card-pad', cardPad + 'px');
@@ -119,10 +130,40 @@ function layoutGrid() {
   grid.style.setProperty('--icon-w', compactLayout ? (iconHeight * 1.5) + 'px' : (95 * iconScale) + '%');
   grid.style.setProperty('--code-size', (available * (compactLayout ? 0.12 : 0.22)) + 'px');
   grid.style.setProperty('--name-size', (available * (compactLayout ? 0.075 : 0.14)) + 'px');
-  currentValueSize = available * (compactLayout ? 0.22 : 0.38);
-  grid.style.setProperty('--value-size', currentValueSize + 'px');
+  st.valueSize = available * (compactLayout ? 0.22 : 0.38);
+  grid.style.setProperty('--value-size', st.valueSize + 'px');
 
-  grid.querySelectorAll('.value').forEach(fitValueText);
+  grid.querySelectorAll('.value').forEach(el => fitValueText(el, st.valueSize));
+}
+
+// Two-row mode: cells are short and wide, so the card is a grid — big flag on
+// the left, code over name on its right, price full-width underneath
+// (see #rows.two .card in the CSS). Sizes come from the cell's real w/h.
+function layoutCompactCards(st, grid, cellW, cellH) {
+  const pad = Math.min(cellH, cellW) * 0.07;
+  grid.style.setProperty('--card-pad', pad + 'px');
+  const innerW = Math.max(40, cellW - pad * 2);
+  const innerH = Math.max(40, cellH - pad * 2);
+  // Flag: up to ~46% of the inner height, never more than ~36% of the width,
+  // so the code/name column and the price keep room.
+  const iconH = Math.min(innerH * 0.46, innerW * 0.36 / 1.5);
+  const iconW = iconH * 1.5;
+  const colGap = innerW * 0.025;
+  const textW = Math.max(30, innerW - iconW - colGap);
+  grid.style.setProperty('--icon-h', iconH + 'px');
+  grid.style.setProperty('--icon-w', iconW + 'px');
+  grid.style.setProperty('--col-gap', colGap + 'px');
+  grid.style.setProperty('--text-max', textW + 'px');
+  grid.style.setProperty('--value-gap', innerH * 0.12 + 'px');
+  grid.style.setProperty('--code-size', Math.min(iconH * 0.40, textW / 3.4) + 'px');
+  grid.style.setProperty('--name-size', Math.min(iconH * 0.19, textW / 7) + 'px');
+  st.valueSize = innerH * 0.32;
+  grid.style.setProperty('--value-size', st.valueSize + 'px');
+  grid.querySelectorAll('.value').forEach(el => fitValueText(el, st.valueSize));
+}
+
+function layoutAll() {
+  rowStates.forEach(layoutGrid);
 }
 
 // buildCard — one-time DOM build for a new currency, via innerHTML so
@@ -137,6 +178,112 @@ function buildCard(c) {
     <div class="value">${esc(c.symbol)}${fmt(c.price)}</div>
   `;
   return card;
+}
+
+// One header + grid block per visible row. Returns true when the number of
+// rows changed (everything must be laid out again).
+function ensureRows(n) {
+  if (rowStates.length === n) return false;
+  const root = document.getElementById('rows');
+  root.innerHTML = '';
+  rowStates = [];
+  for (let i = 0; i < n; i++) {
+    const block = document.createElement('div');
+    block.className = 'row-block';
+    // Static markup only — title/subtitle are filled with textContent.
+    block.innerHTML = '<div class="header"><h1></h1><div class="sub"></div></div><div class="grid-wrap"></div>';
+    root.appendChild(block);
+    rowStates.push({
+      block, titleEl: block.querySelector('h1'), subEl: block.querySelector('.sub'),
+      wrap: block.querySelector('.grid-wrap'), grid: null, cardEls: new Map(), count: 0, valueSize: 0,
+    });
+  }
+  root.classList.toggle('two', n === 2);
+  return true;
+}
+
+// Renders one row; returns true if its set of cards changed.
+function renderRow(st, idx, row, fxFlash) {
+  st.titleEl.textContent = row.title || '';
+  st.subEl.textContent = row.subtitle || '';
+
+  // The screen is sized for a handful of big tiles, not a scrolling
+  // list — cap what's shown even if more are enabled in the panel.
+  const shown = (row.currencies || []).slice(0, MAX_DISPLAYED_CURRENCIES);
+  // Only a change in WHICH currencies show needs a full re-layout —
+  // a price tick alone doesn't change geometry.
+  const newCodes = new Set(shown.map(c => c.code));
+  const structuralChange = newCodes.size !== st.cardEls.size || [...newCodes].some(code => !st.cardEls.has(code));
+  st.count = shown.length;
+
+  if (st.count === 0) {
+    st.wrap.innerHTML = '<div class="empty">No currencies enabled. Add or enable some from the control panel.</div>';
+    st.grid = null;
+    st.cardEls.clear();
+    return false;
+  }
+  if (!st.grid || !st.grid.isConnected) {
+    st.wrap.innerHTML = '';
+    st.grid = document.createElement('div');
+    st.grid.className = 'grid';
+    st.wrap.appendChild(st.grid);
+  }
+
+  const changedValueEls = [];
+  shown.forEach(c => {
+    const key = `${idx}:${c.code}`;
+    // undefined = first time seeing this currency — never flash that.
+    const priceChanged = lastPrices[key] !== undefined && lastPrices[key] !== c.price;
+    let card = st.cardEls.get(c.code);
+    if (!card) {
+      card = buildCard(c);
+      st.cardEls.set(c.code, card);
+    } else {
+      const codeEl = card.querySelector('.code');
+      if (codeEl.textContent !== c.code) codeEl.textContent = c.code;
+      const nameEl = card.querySelector('.name');
+      if (nameEl.textContent !== c.name) nameEl.textContent = c.name;
+      const iconEl = card.querySelector('.icon-badge');
+      const wantedFlag = safeFlagSrc(c.flag);
+      const currentFlag = iconEl.querySelector('img');
+      if (wantedFlag !== (currentFlag ? currentFlag.getAttribute('src') : '')) {
+        // The one spot here still touching innerHTML — same esc()
+        // rule as buildCard() applies.
+        iconEl.innerHTML = wantedFlag ? `<img src="${wantedFlag}" alt="${esc(c.name)} flag">` : '';
+      }
+      const valueEl = card.querySelector('.value');
+      const wantedValue = `${c.symbol || ''}${fmt(c.price)}`;
+      if (valueEl.textContent !== wantedValue) {
+        valueEl.textContent = wantedValue;
+        changedValueEls.push(valueEl);
+      }
+    }
+    if (priceChanged && fxFlash) {
+      // Replaying a CSS animation needs remove -> reflow -> re-add.
+      card.classList.remove('flash');
+      void card.offsetWidth;
+      card.classList.add('flash');
+      // Must come back off (card is persistent now) — the class also
+      // carries overflow:visible in CSS, which can't stay on forever.
+      card.addEventListener('animationend', () => card.classList.remove('flash'), { once: true });
+    }
+    // appendChild on an existing child MOVES it — keeps DOM order in
+    // sync with `shown` with no separate reorder pass.
+    st.grid.appendChild(card);
+  });
+
+  for (const [code, el] of st.cardEls) {
+    if (!newCodes.has(code)) {
+      el.remove();
+      st.cardEls.delete(code);
+    }
+  }
+  shown.forEach(c => { lastPrices[`${idx}:${c.code}`] = c.price; });
+
+  if (!structuralChange && changedValueEls.length) {
+    changedValueEls.forEach(el => fitValueText(el, st.valueSize)); // just the cards whose value text actually changed
+  }
+  return structuralChange;
 }
 
 async function refresh() {
@@ -170,87 +317,13 @@ async function refresh() {
     document.body.classList.toggle('fx-flash', !!d.fx_flash);
     document.body.classList.toggle('fx-glow', !!d.fx_glow);
 
-    document.getElementById('dash-title').textContent = d.title || '';
-    document.getElementById('dash-subtitle').textContent = d.subtitle || '';
-
-    const wrap = document.getElementById('grid-wrap');
-    // The screen is sized for a handful of big tiles, not a scrolling
-    // list — cap what's shown even if more are enabled in the panel.
-    const shown = (d.currencies || []).slice(0, MAX_DISPLAYED_CURRENCIES);
-    // Only a change in WHICH currencies show needs a full re-layout —
-    // a price tick alone doesn't change geometry.
-    const newCodes = new Set(shown.map(c => c.code));
-    const structuralChange = newCodes.size !== cardEls.size || [...newCodes].some(code => !cardEls.has(code));
-    lastCount = shown.length;
-
-    if (lastCount === 0) {
-      wrap.innerHTML = '<div class="empty">No currencies enabled. Add or enable some from the control panel.</div>';
-      cardEls.clear();
-    } else {
-      let grid = wrap.querySelector('.grid');
-      if (!grid) {
-        wrap.innerHTML = '';
-        grid = document.createElement('div');
-        grid.className = 'grid';
-        wrap.appendChild(grid);
-      }
-
-      const changedValueEls = [];
-      shown.forEach(c => {
-        // undefined = first time seeing this currency — never flash that.
-        const priceChanged = lastPrices[c.code] !== undefined && lastPrices[c.code] !== c.price;
-        let card = cardEls.get(c.code);
-        if (!card) {
-          card = buildCard(c);
-          cardEls.set(c.code, card);
-        } else {
-          const codeEl = card.querySelector('.code');
-          if (codeEl.textContent !== c.code) codeEl.textContent = c.code;
-          const nameEl = card.querySelector('.name');
-          if (nameEl.textContent !== c.name) nameEl.textContent = c.name;
-          const iconEl = card.querySelector('.icon-badge');
-          const wantedFlag = safeFlagSrc(c.flag);
-          const currentFlag = iconEl.querySelector('img');
-          if (wantedFlag !== (currentFlag ? currentFlag.getAttribute('src') : '')) {
-            // The one spot here still touching innerHTML — same esc()
-            // rule as buildCard() applies.
-            iconEl.innerHTML = wantedFlag ? `<img src="${wantedFlag}" alt="${esc(c.name)} flag">` : '';
-          }
-          const valueEl = card.querySelector('.value');
-          const wantedValue = `${c.symbol || ''}${fmt(c.price)}`;
-          if (valueEl.textContent !== wantedValue) {
-            valueEl.textContent = wantedValue;
-            changedValueEls.push(valueEl);
-          }
-        }
-        if (priceChanged && d.fx_flash) {
-          // Replaying a CSS animation needs remove -> reflow -> re-add.
-          card.classList.remove('flash');
-          void card.offsetWidth;
-          card.classList.add('flash');
-          // Must come back off (card is persistent now) — the class also
-          // carries overflow:visible in CSS, which can't stay on forever.
-          card.addEventListener('animationend', () => card.classList.remove('flash'), { once: true });
-        }
-        // appendChild on an existing child MOVES it — keeps DOM order in
-        // sync with `shown` with no separate reorder pass.
-        grid.appendChild(card);
-      });
-
-      for (const [code, el] of cardEls) {
-        if (!newCodes.has(code)) {
-          el.remove();
-          cardEls.delete(code);
-        }
-      }
-
-      lastPrices = Object.fromEntries(shown.map(c => [c.code, c.price]));
-
-      if (structuralChange) {
-        layoutGrid(); // re-measures every card — only worth it when the set changed
-      } else if (changedValueEls.length) {
-        changedValueEls.forEach(fitValueText); // just the cards whose value text actually changed
-      }
+    const rows = d.rows || [{ title: d.title, subtitle: d.subtitle, currencies: d.currencies }];
+    let relayout = ensureRows(rows.length);
+    rows.forEach((row, i) => {
+      if (renderRow(rowStates[i], i, row, d.fx_flash)) relayout = true;
+    });
+    if (relayout) {
+      layoutAll(); // re-measures every card — only worth it when the set changed
     }
 
     document.getElementById('footer').hidden = !d.show_updated_at;
@@ -268,7 +341,7 @@ async function refresh() {
 let resizeTimer = null;
 window.addEventListener('resize', () => {
   clearTimeout(resizeTimer);
-  resizeTimer = setTimeout(layoutGrid, 100);
+  resizeTimer = setTimeout(layoutAll, 100);
 });
 
 refresh();

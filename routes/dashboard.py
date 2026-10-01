@@ -4,7 +4,7 @@ import socket
 from flask import jsonify, render_template
 
 from core import app
-from helpers.storage import get_lan_ip, load_data
+from helpers.storage import MAX_ROW_CURRENCIES, get_lan_ip, load_data
 from helpers.version import APP_VERSION_STRING
 
 
@@ -17,9 +17,12 @@ def dashboard():
 @app.route("/api/data")
 def api_data():
     data = load_data()
-    enabled = [c for c in data["currencies"] if c.get("enabled")]
+    rows = [{"title": r["title"], "subtitle": r["subtitle"],
+             "currencies": [c for c in r["currencies"] if c.get("enabled")][:MAX_ROW_CURRENCIES]}
+            for r in data["rows"] if r["enabled"]]
     return jsonify({
-        "currencies": enabled,
+        "rows": rows,
+        "currencies": rows[0]["currencies"] if rows else [],  # legacy: pages loaded before this update
         "updated_at": data.get("updated_at"),
         "title": data["settings"]["title"],
         "subtitle": data["settings"]["subtitle"],

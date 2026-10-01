@@ -3,7 +3,7 @@ concerns (Wi-Fi, hotspot, updates, reboot) live in routes/admin_system.py.
 """
 import re
 
-from flask import redirect, render_template, request, url_for
+from flask import abort, redirect, render_template, request, url_for
 
 from config import (
     DEFAULT_PALETTE, MAX_CODE_LEN, MAX_NAME_LEN, MAX_PRICE_VALUE, MAX_SUBTITLE_LEN, MAX_SYMBOL_LEN,
@@ -13,7 +13,9 @@ from core import app
 from helpers.flags import fetch_suggested_flag, save_uploaded_flag, delete_flag_file
 from helpers.security import check_csrf, csrf_token, require_admin_auth
 from helpers.remote import get_source
-from helpers.storage import find_currency, load_data, save_data
+from helpers.storage import (
+    MAX_ROW_CURRENCIES, MIN_ROW_CURRENCIES, ROWS, find_currency, load_data, save_data,
+)
 from helpers.validation import clean_text, parse_price
 from i18n import TRANSLATIONS, get_translations
 
@@ -27,7 +29,8 @@ def admin_page():
     lang, t = get_translations(data)
     return render_template(
         "admin.html",
-        currencies=data["currencies"],
+        rows=data["rows"],
+        max_row=MAX_ROW_CURRENCIES,
         settings=data["settings"],
         source=get_source(),
         lang=lang,
@@ -72,52 +75,52 @@ def admin_save_all():
     if not check_csrf():
         return redirect(url_for("admin_page", error=t["err_csrf"]))
 
-    title = clean_text(request.form.get("title"), MAX_TITLE_LEN)
-    if title is None:
-        return redirect(url_for("admin_page", error=t["err_too_long"].format(field=t["field_title"], max=MAX_TITLE_LEN)))
-    if not title:
-        return redirect(url_for("admin_page", error=t["err_title_required"]))
+    def fail(msg):
+        return redirect(url_for("admin_page", error=msg))
 
-    subtitle = clean_text(request.form.get("subtitle"), MAX_SUBTITLE_LEN)
-    if subtitle is None:
-        return redirect(url_for("admin_page", error=t["err_too_long"].format(field=t["field_subtitle"], max=MAX_SUBTITLE_LEN)))
-
-    # Validate everything before writing anything, so a bad field in one
-    # currency doesn't leave others half-updated.
-    updates = {}
-    for c in data["currencies"]:
-        code = c["code"]
-        name_val = clean_text(request.form.get(f"name_{code}"), MAX_NAME_LEN)
-        symbol_val = clean_text(request.form.get(f"symbol_{code}"), MAX_SYMBOL_LEN)
-        price_raw = request.form.get(f"price_{code}", "")
-
-        if name_val is None:
-            return redirect(url_for("admin_page", error=t["err_too_long"].format(field=f"{code} {t['name_ph']}", max=MAX_NAME_LEN)))
-        if symbol_val is None:
-            return redirect(url_for("admin_page", error=t["err_too_long"].format(field=f"{code} {t['symbol_ph']}", max=MAX_SYMBOL_LEN)))
-        if not name_val or not price_raw:
-            return redirect(url_for("admin_page", error=t["err_missing_fields"].format(code=code)))
-
-        price_val = parse_price(price_raw)
-        if price_val is None:
-            return redirect(url_for("admin_page", error=t["err_invalid_price"].format(code=code, max=f"{MAX_PRICE_VALUE:,}")))
-
-        updates[code] = {
-            "name": name_val,
-            "symbol": symbol_val,
-            "price": price_val,
-            "enabled": f"enabled_{code}" in request.form,
-        }
-
-    for c in data["currencies"]:
-        c.update(updates[c["code"]])
+    # Validate everything before writing anything, so a bad field doesn't
+    # leave rows half-updated.
+    new_rows = []
+    for n, row in enumerate(data["rows"]):
+        p = f"r{n}_"
+        label = f"{t['row_heading'].format(n=n + 1)}: "
+        title = clean_text(request.form.get(p + "title"), MAX_TITLE_LEN)
+        if title is None:
+            return fail(label + t["err_too_long"].format(field=t["field_title"], max=MAX_TITLE_LEN))
+        subtitle = clean_text(request.form.get(p + "subtitle"), MAX_SUBTITLE_LEN)
+        if subtitle is None:
+            return fail(label + t["err_too_long"].format(field=t["field_subtitle"], max=MAX_SUBTITLE_LEN))
+        enabled = p + "enabled" in request.form
+        if enabled and not title:
+            return fail(label + t["err_title_required"])
+        if enabled and len(row["currencies"]) < MIN_ROW_CURRENCIES:
+            return fail(label + t["err_row_count"].format(min=MIN_ROW_CURRENCIES, max=MAX_ROW_CURRENCIES))
+        updates = []
+        for c in row["currencies"]:
+            code = c["code"]
+            name_val = clean_text(request.form.get(f"{p}name_{code}"), MAX_NAME_LEN)
+            symbol_val = clean_text(request.form.get(f"{p}symbol_{code}"), MAX_SYMBOL_LEN)
+            price_raw = request.form.get(f"{p}price_{code}", "")
+            if name_val is None:
+                return fail(label + t["err_too_long"].format(field=f"{code} {t['name_ph']}", max=MAX_NAME_LEN))
+            if symbol_val is None:
+                return fail(label + t["err_too_long"].format(field=f"{code} {t['symbol_ph']}", max=MAX_SYMBOL_LEN))
+            if not name_val or not price_raw:
+                return fail(label + t["err_missing_fields"].format(code=code))
+            price_val = parse_price(price_raw)
+            if price_val is None:
+                return fail(label + t["err_invalid_price"].format(code=code, max=f"{MAX_PRICE_VALUE:,}"))
+            updates.append({**c, "name": name_val, "symbol": symbol_val, "price": price_val,
+                            "enabled": f"{p}enabled_{code}" in request.form})
+        new_rows.append({"enabled": enabled, "title": title, "subtitle": subtitle, "currencies": updates})
+    if not any(r["enabled"] for r in new_rows):
+        return fail(t["err_no_row_enabled"])
 
     palette = request.form.get("color_palette", DEFAULT_PALETTE)
     if palette not in PALETTE_CHOICES:
         palette = DEFAULT_PALETTE
 
-    data["settings"]["title"] = title
-    data["settings"]["subtitle"] = subtitle
+    data["rows"] = new_rows
     data["settings"]["color_palette"] = palette
     data["settings"]["show_updated_at"] = "show_updated_at" in request.form
     data["settings"]["fx_glass"] = "fx_glass" in request.form
@@ -129,29 +132,38 @@ def admin_save_all():
     return redirect(url_for("admin_page", msg=t["settings_saved"]))
 
 
-@app.route("/admin/currency/<code>/delete", methods=["POST"])
-def admin_delete_currency(code):
+@app.route("/admin/row/<int:row>/currency/<code>/delete", methods=["POST"])
+def admin_delete_currency(row, code):
     unauthorized = require_admin_auth()
     if unauthorized:
         return unauthorized
+    if not 0 <= row < ROWS:
+        abort(404)
     data = load_data()
     _, t = get_translations(data)
     if not check_csrf():
         return redirect(url_for("admin_page", error=t["err_csrf"]))
-    c = find_currency(data, code)
+    c = find_currency(data, row, code)
     if not c:
         return redirect(url_for("admin_page", error=t["err_not_found"].format(code=code)))
-    data["currencies"] = [x for x in data["currencies"] if x["code"] != code]
+    r = data["rows"][row]
+    if r["enabled"] and len(r["currencies"]) <= MIN_ROW_CURRENCIES:
+        return redirect(url_for("admin_page", error=t["err_row_count"].format(min=MIN_ROW_CURRENCIES, max=MAX_ROW_CURRENCIES)))
+    r["currencies"] = [x for x in r["currencies"] if x["code"] != code]
     save_data(data)
-    delete_flag_file(c.get("flag"))
+    # The flag file is shared by code: only delete it when no row still uses it.
+    if not any(find_currency(data, n, code) for n in range(ROWS)):
+        delete_flag_file(c.get("flag"))
     return redirect(url_for("admin_page", msg=f"{code}{t['removed_suffix']}"))
 
 
-@app.route("/admin/currency/add", methods=["POST"])
-def admin_add_currency():
+@app.route("/admin/row/<int:row>/currency/add", methods=["POST"])
+def admin_add_currency(row):
     unauthorized = require_admin_auth()
     if unauthorized:
         return unauthorized
+    if not 0 <= row < ROWS:
+        abort(404)
 
     data = load_data()
     _, t = get_translations(data)
@@ -176,7 +188,9 @@ def admin_add_currency():
     if price is None:
         return redirect(url_for("admin_page", error=t["err_invalid_price"].format(code=code, max=f"{MAX_PRICE_VALUE:,}")))
 
-    if find_currency(data, code):
+    if len(data["rows"][row]["currencies"]) >= MAX_ROW_CURRENCIES:
+        return redirect(url_for("admin_page", error=t["err_row_full"].format(max=MAX_ROW_CURRENCIES)))
+    if find_currency(data, row, code):
         return redirect(url_for("admin_page", error=t["err_code_exists"].format(code=code)))
 
     flag_source = request.form.get("flag_source", "auto")
@@ -190,7 +204,7 @@ def admin_add_currency():
         if not flag_path:
             return redirect(url_for("admin_page", error=t["err_flag_fetch_failed"].format(code=code)))
 
-    data["currencies"].append({
+    data["rows"][row]["currencies"].append({
         "code": code,
         "name": name,
         "symbol": symbol,

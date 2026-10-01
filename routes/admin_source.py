@@ -26,6 +26,10 @@ def admin_source():
     mode = "url" if request.form.get("mode") == "url" else "manual"
     saved = remote.get_source()
     cand = dict(saved)
+    if mode == "manual":
+        # The URL/token/insecure/Test/Fetch controls are disabled in manual
+        # mode (so not submitted): keep the saved remote settings untouched.
+        return _finish(mode, cand, "save", t)
     cand["url"] = (clean_text(request.form.get("url"), 300) or "").strip()
     cand["insecure"] = "insecure" in request.form
     if "clear_token" in request.form:
@@ -36,6 +40,10 @@ def admin_source():
     if len(cand["token"]) > 300 or any(ord(c) < 33 for c in cand["token"]):
         return _back(False, t["err_source_token"])
 
+    return _finish(mode, cand, action, t)
+
+
+def _finish(mode, cand, action, t):
     if action == "test":
         ok, msg = remote.sync(apply=False, src=cand)
         return _back(ok, f"{t['source_test_ok' if ok else 'source_test_fail']}: {msg}")

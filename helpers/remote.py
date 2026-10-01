@@ -20,8 +20,8 @@ from config import (
     APP_DIR, DATA_FILE, FLAGS_DIR, MAX_CODE_LEN, MAX_NAME_LEN, MAX_PRICE_VALUE, MAX_SUBTITLE_LEN,
     MAX_SYMBOL_LEN, MAX_TITLE_LEN, PALETTE_CHOICES,
 )
-from helpers.storage import load_data, save_data
-from helpers.validation import clean_text
+from helpers.storage import MAX_ROW_CURRENCIES, ROWS, invalidate_cache, load_data, save_data
+from helpers.validation import clean_text, norm_price
 from helpers.version import APP_VERSION_STRING
 
 SOURCE_FILE = os.path.join(APP_DIR, "source.json")
@@ -126,9 +126,39 @@ def validate_payload(obj):
     for k in FX_KEYS:
         settings[k] = bool(s.get(k, True))
 
-    cur_in = obj.get("currencies")
-    if not isinstance(cur_in, list) or len(cur_in) > MAX_CURRENCIES:
-        return None, f"currencies must be a list (max {MAX_CURRENCIES})"
+    rows_in = obj.get("rows")
+    if rows_in is None:
+        # Server without two-row support: its flat list becomes row 1, row 2 stays off.
+        rows_in = [{"enabled": True, "title": title, "subtitle": subtitle, "currencies": obj.get("currencies")},
+                   {"enabled": False, "title": "", "subtitle": "", "currencies": []}]
+        limit = MAX_CURRENCIES
+    else:
+        limit = MAX_ROW_CURRENCIES
+    if not isinstance(rows_in, list) or not 1 <= len(rows_in) <= ROWS:
+        return None, f"rows must be a list of 1..{ROWS}"
+    rows = []
+    for n, r in enumerate(rows_in):
+        if not isinstance(r, dict):
+            return None, f"rows[{n}] is not an object"
+        r_title = clean_text(r.get("title") if isinstance(r.get("title"), str) else "", MAX_TITLE_LEN)
+        r_sub = clean_text(r.get("subtitle") if isinstance(r.get("subtitle"), str) else "", MAX_SUBTITLE_LEN)
+        if r_title is None or r_sub is None:
+            return None, f"rows[{n}] title/subtitle too long"
+        currencies, err = _validate_currencies(r.get("currencies"), limit)
+        if err:
+            return None, f"rows[{n}]: {err}"
+        rows.append({"enabled": bool(r.get("enabled", False)), "title": r_title, "subtitle": r_sub, "currencies": currencies})
+    while len(rows) < ROWS:
+        rows.append({"enabled": False, "title": "", "subtitle": "", "currencies": []})
+    if not any(r["enabled"] for r in rows):
+        rows[0]["enabled"] = True
+    return {"version": version, "settings": settings, "rows": rows}, None
+
+
+def _validate_currencies(cur_in, limit):
+    """(list, None) or (None, error). Codes must be unique within the list."""
+    if not isinstance(cur_in, list) or len(cur_in) > limit:
+        return None, f"currencies must be a list (max {limit})"
     currencies, seen = [], set()
     for i, c in enumerate(cur_in):
         if not isinstance(c, dict):
@@ -145,16 +175,15 @@ def validate_payload(obj):
         if not name or symbol is None:
             return None, f"{code}: name missing/too long or symbol too long"
         price = c.get("price")
-        if isinstance(price, float) and price.is_integer():
-            price = int(price)
-        if isinstance(price, bool) or not isinstance(price, int) or not 0 <= price <= MAX_PRICE_VALUE:
-            return None, f"{code}: price must be a whole number 0..{MAX_PRICE_VALUE}"
+        if isinstance(price, bool) or not isinstance(price, (int, float)) or not 0 <= price <= MAX_PRICE_VALUE:
+            return None, f"{code}: price must be a number 0..{MAX_PRICE_VALUE}"
+        price = norm_price(price)
         flag = c.get("flag")
         if flag is not None and (not isinstance(flag, str) or urlparse(flag).scheme not in ("http", "https")):
             return None, f"{code}: flag must be an http(s) URL or null"
         currencies.append({"code": code, "name": name, "symbol": symbol, "price": price,
                            "flag_src": flag, "enabled": bool(c.get("enabled", True))})
-    return {"version": version, "settings": settings, "currencies": currencies}, None
+    return currencies, None
 
 
 def fetch_payload(url, token="", insecure=False):
@@ -190,18 +219,21 @@ def _sync_flag(code, flag_src, old, insecure):
 
 
 def apply_payload(clean, insecure):
-    """Overwrite title/settings/currencies from a validated payload."""
+    """Overwrite settings and both rows from a validated payload."""
     data = load_data()
-    old_by_code = {c["code"]: c for c in data["currencies"]}
-    currencies = []
-    for c in clean["currencies"]:
-        c = dict(c)
-        c["flag"] = _sync_flag(c["code"], c["flag_src"], old_by_code.get(c["code"]), insecure)
-        currencies.append(c)
+    old_by_code = {c["code"]: c for r in data["rows"] for c in r["currencies"]}
+    rows = []
+    for r in clean["rows"]:
+        currencies = []
+        for c in r["currencies"]:
+            c = dict(c)
+            c["flag"] = _sync_flag(c["code"], c["flag_src"], old_by_code.get(c["code"]), insecure)
+            currencies.append(c)
+        rows.append({**r, "currencies": currencies})
     keep = data["settings"].get("admin_language")
     data["settings"].update(clean["settings"])
     data["settings"]["admin_language"] = keep
-    data["currencies"] = currencies
+    data["rows"] = rows
     save_data(data)
 
 
@@ -228,6 +260,7 @@ def switch_mode(new_mode):
             with open(tmp, "w", encoding="utf-8") as f:
                 json.dump(restored, f, indent=2)
             os.replace(tmp, DATA_FILE)
+            invalidate_cache()  # written behind load_data's back
         elif new_mode == "url":
             src["version"] = 0  # nothing remote known yet: first sync must apply
         src["mode"] = new_mode
@@ -247,7 +280,7 @@ def sync(force=False, apply=True, src=None):
         if err:
             msg = err
         elif not apply:
-            return True, f"version {clean['version']}, {len(clean['currencies'])} currencies (not applied)"
+            return True, f"version {clean['version']}, {sum(len(r['currencies']) for r in clean['rows'])} currencies (not applied)"
         elif force or clean["version"] > saved["version"]:
             apply_payload(clean, cfg["insecure"])
             saved["version"] = clean["version"]

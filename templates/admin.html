@@ -37,21 +37,23 @@
         <label><input type="radio" name="mode" value="manual" {% if source.mode != 'url' %}checked{% endif %}> {{ t.source_manual }}</label>
         <label><input type="radio" name="mode" value="url" {% if source.mode == 'url' %}checked{% endif %}> {{ t.source_url }}</label>
       </div>
-      <input type="text" name="url" value="{{ source.url }}" placeholder="{{ t.source_url_ph }}" maxlength="300" style="width:100%;margin:10px 0;">
-      <input type="password" name="token" autocomplete="off" placeholder="{{ t.source_token_saved_ph if source.token else t.source_token_ph }}" maxlength="300" style="width:100%;margin-bottom:10px;">
-      {% if source.token %}<label class="chk"><input type="checkbox" name="clear_token"> {{ t.source_token_clear }}</label>{% endif %}
-      <label class="chk"><input type="checkbox" name="insecure" {% if source.insecure %}checked{% endif %}> {{ t.source_insecure }}</label>
+      <input type="text" name="url" data-url-only {% if source.mode != 'url' %}disabled{% endif %} value="{{ source.url }}" placeholder="{{ t.source_url_ph }}" maxlength="300" style="width:100%;margin:10px 0;">
+      <input type="password" name="token" data-url-only {% if source.mode != 'url' %}disabled{% endif %} autocomplete="off" placeholder="{{ t.source_token_saved_ph if source.token else t.source_token_ph }}" maxlength="300" style="width:100%;margin-bottom:10px;">
+      {% if source.token %}<label class="chk"><input type="checkbox" name="clear_token" data-url-only {% if source.mode != 'url' %}disabled{% endif %}> {{ t.source_token_clear }}</label>{% endif %}
+      <label class="chk"><input type="checkbox" name="insecure" data-url-only {% if source.mode != 'url' %}disabled{% endif %} {% if source.insecure %}checked{% endif %}> {{ t.source_insecure }}</label>
       {% if source.mode == 'url' %}<p class="sub">{{ t.source_version }}: {{ source.version }} · {{ t.source_status }}: {{ source.last_status or '-' }}</p>{% endif %}
       <button type="submit" name="action" value="save" class="save">{{ t.source_save }}</button>
-      <button type="submit" name="action" value="test" class="save">{{ t.source_test }}</button>
-      <button type="submit" name="action" value="fetch" class="save">{{ t.source_fetch }}</button>
+      <button type="submit" name="action" value="test" class="save" data-url-only {% if source.mode != 'url' %}disabled{% endif %}>{{ t.source_test }}</button>
+      <button type="submit" name="action" value="fetch" class="save" data-url-only {% if source.mode != 'url' %}disabled{% endif %}>{{ t.source_fetch }}</button>
     </form>
   </div>
 
   <!-- Standalone per-currency delete forms; the Remove button below links
        via form="..." (HTML5) instead of nesting inside the big save-all form. -->
-  {% for c in currencies %}
-  <form id="delete-{{ c.code }}" method="post" action="{{ url_for('admin_delete_currency', code=c.code) }}"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"></form>
+  {% for r in rows %}{% set n = loop.index0 %}
+  {% for c in r.currencies %}
+  <form id="delete-{{ n }}-{{ c.code }}" method="post" action="{{ url_for('admin_delete_currency', row=n, code=c.code) }}"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"></form>
+  {% endfor %}
   {% endfor %}
 
   <form method="post" action="{{ url_for('admin_save_all') }}">
@@ -59,14 +61,6 @@
     <div class="settings-card">
       <h2>{{ t.settings_heading }}</h2>
       <div class="fields">
-        <div>
-          <label class="field-label" for="title">{{ t.field_title }}</label>
-          <input type="text" id="title" name="title" value="{{ settings.title }}" maxlength="{{ max_title_len }}" required>
-        </div>
-        <div>
-          <label class="field-label" for="subtitle">{{ t.field_subtitle }}</label>
-          <input type="text" id="subtitle" name="subtitle" value="{{ settings.subtitle }}" maxlength="{{ max_subtitle_len }}">
-        </div>
         <div>
           <label class="field-label" for="color_palette">{{ t.field_palette }}</label>
           <select id="color_palette" name="color_palette">
@@ -87,32 +81,50 @@
       </div>
     </div>
 
-    {% for c in currencies %}
+    {% for r in rows %}{% set n = loop.index0 %}
+    <div class="settings-card">
+      <h2>{{ t.row_heading.format(n=n + 1) }}</h2>
+      <div class="fields">
+        <label class="chk"><input type="checkbox" name="r{{ n }}_enabled" {% if r.enabled %}checked{% endif %}> {{ t.row_enabled_label }}</label>
+        <div>
+          <label class="field-label" for="r{{ n }}_title">{{ t.field_title }}</label>
+          <input type="text" id="r{{ n }}_title" name="r{{ n }}_title" value="{{ r.title }}" maxlength="{{ max_title_len }}">
+        </div>
+        <div>
+          <label class="field-label" for="r{{ n }}_subtitle">{{ t.field_subtitle }}</label>
+          <input type="text" id="r{{ n }}_subtitle" name="r{{ n }}_subtitle" value="{{ r.subtitle }}" maxlength="{{ max_subtitle_len }}">
+        </div>
+      </div>
+    </div>
+    {% for c in r.currencies %}
     <div class="row {% if not c.enabled %}disabled{% endif %}">
       <div class="thumb">{% if c.flag %}<img src="{{ c.flag }}" alt="{{ c.name }} flag">{% endif %}</div>
       <div class="code-badge">{{ c.code }}</div>
       <div class="inline">
-        <input type="text" name="name_{{ c.code }}" value="{{ c.name }}" placeholder="{{ t.name_ph }}" maxlength="{{ max_name_len }}" required>
-        <input type="text" name="symbol_{{ c.code }}" value="{{ c.symbol }}" placeholder="{{ t.symbol_ph }}" maxlength="{{ max_symbol_len }}">
-        <input type="text" inputmode="numeric" name="price_{{ c.code }}" value="{{ c.price|round|int }}" oninput="filterDecimalInput(this)" placeholder="{{ t.price_ph }}" required>
-        <label class="chk"><input type="checkbox" name="enabled_{{ c.code }}" {% if c.enabled %}checked{% endif %}> {{ t.enabled_label }}</label>
+        <input type="text" name="r{{ n }}_name_{{ c.code }}" value="{{ c.name }}" placeholder="{{ t.name_ph }}" maxlength="{{ max_name_len }}" required>
+        <input type="text" name="r{{ n }}_symbol_{{ c.code }}" value="{{ c.symbol }}" placeholder="{{ t.symbol_ph }}" maxlength="{{ max_symbol_len }}">
+        <input type="text" inputmode="decimal" name="r{{ n }}_price_{{ c.code }}" value="{{ c.price }}" oninput="filterDecimalInput(this)" placeholder="{{ t.price_ph }}" required>
+        <label class="chk"><input type="checkbox" name="r{{ n }}_enabled_{{ c.code }}" {% if c.enabled %}checked{% endif %}> {{ t.enabled_label }}</label>
       </div>
-      <button type="submit" form="delete-{{ c.code }}" class="delete" onclick="return confirm('{{ t.confirm_remove.format(code=c.code) }}');">{{ t.remove_btn }}</button>
+      <button type="submit" form="delete-{{ n }}-{{ c.code }}" class="delete" onclick="return confirm('{{ t.confirm_remove.format(code=c.code) }}');">{{ t.remove_btn }}</button>
     </div>
+    {% endfor %}
     {% endfor %}
 
     <div style="margin-top:20px;"><button type="submit" class="save">{{ t.save_settings }}</button></div>
   </form>
 
+  {% for r in rows %}{% set n = loop.index0 %}
+  {% if r.currencies|length < max_row %}
   <div class="add-card">
-    <h2>{{ t.add_heading }}</h2>
-    <form method="post" action="{{ url_for('admin_add_currency') }}" enctype="multipart/form-data">
+    <h2>{{ t.row_heading.format(n=n + 1) }} &mdash; {{ t.add_heading }}</h2>
+    <form method="post" action="{{ url_for('admin_add_currency', row=n) }}" enctype="multipart/form-data">
       <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
       <div class="fields">
         <input type="text" name="code" placeholder="{{ t.code_ph }}" maxlength="{{ max_code_len }}" required>
         <input type="text" name="name" placeholder="{{ t.name_req_ph }}" maxlength="{{ max_name_len }}" required>
         <input type="text" name="symbol" placeholder="{{ t.symbol_opt_ph }}" maxlength="{{ max_symbol_len }}">
-        <input type="text" inputmode="numeric" name="price" placeholder="{{ t.price_req_ph }}" oninput="filterDecimalInput(this)" required>
+        <input type="text" inputmode="decimal" name="price" placeholder="{{ t.price_req_ph }}" oninput="filterDecimalInput(this)" required>
       </div>
       <div class="flag-choice">
         <label><input type="radio" name="flag_source" value="auto" checked> {{ t.flag_auto }}</label>
@@ -122,6 +134,9 @@
       <div style="margin-top:16px;"><button type="submit" class="save">{{ t.add_btn }}</button></div>
     </form>
   </div>
+
+  {% endif %}
+  {% endfor %}
 
   <a class="back" href="/">{{ t.back_link }}</a>
 
