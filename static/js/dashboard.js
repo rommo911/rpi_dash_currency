@@ -100,14 +100,15 @@ function layoutGrid(st) {
   const twoRows = rowStates.length > 1;
   const rect = wrap.getBoundingClientRect();
   // Same gaps as the CSS (#rows.two .grid) so the cell math matches reality.
-  const gapX = window.innerWidth * (twoRows ? 0.015 : 0.02);
-  const gapY = window.innerHeight * (twoRows ? 0.025 : 0.02);
+  const gapX = window.innerWidth * (twoRows ? TWO_GAP_X : 0.02);
+  const gapY = window.innerHeight * (twoRows ? TWO_GAP_Y : 0.02);
   const { cols, rows, cellSize } = bestGridSplit(count, rect.width, rect.height, gapX, gapY);
   grid.style.gridTemplateColumns = `repeat(${cols}, 1fr)`;
   grid.style.gridTemplateRows = `repeat(${rows}, 1fr)`;
+  grid.style.justifyContent = '';
 
   if (twoRows) {
-    layoutCompactCards(st, grid, (rect.width - gapX * (cols - 1)) / cols, (rect.height - gapY * (rows - 1)) / rows);
+    layoutCompactCards(st, grid, (rect.width - gapX * (cols - 1)) / cols, (rect.height - gapY * (rows - 1)) / rows, cols, rows, gapX, gapY);
     return;
   }
 
@@ -138,27 +139,74 @@ function layoutGrid(st) {
 
 // Two-row mode: cells are short and wide, so the card is a grid — big flag on
 // the left, code over name on its right, price full-width underneath
-// (see #rows.two .card in the CSS). Sizes come from the cell's real w/h.
-function layoutCompactCards(st, grid, cellW, cellH) {
-  const pad = Math.min(cellH, cellW) * 0.07;
-  grid.style.setProperty('--card-pad', pad + 'px');
-  const innerW = Math.max(40, cellW - pad * 2);
-  const innerH = Math.max(40, cellH - pad * 2);
-  // Flag: up to ~46% of the inner height, never more than ~36% of the width,
-  // so the code/name column and the price keep room.
-  const iconH = Math.min(innerH * 0.46, innerW * 0.36 / 1.5);
-  const iconW = iconH * 1.5;
+// (see #rows.two .card in the CSS).
+//
+// Flag/text sizes were tuned on the earlier, roomier geometry (small gaps, small
+// titles, 7% padding). The cards have since given space to the gaps and titles,
+// so sizes are computed from that REFERENCE cell, while the real padding is
+// small: same flag and text, tighter rectangle. Keep TWO_GAP_* and the title
+// numbers below in sync with `#rows.two` in dashboard.css.
+const TWO_GAP_X = 0.025, TWO_GAP_Y = 0.032;
+const REF_GAP_X = 0.015, REF_GAP_Y = 0.025;
+// Gap between the two rows beyond the 5vh the text sizes were tuned with
+// (#rows.two .row-block + .row-block in the CSS is 5.75vh): each row block loses
+// half of it, which must not shrink the text.
+const ROW_GAP_EXTRA_VH = 0.0075;
+const FLAG_SCALE = 0.8;       // flag is 20% smaller than the reference size
+const CARD_MAX_ASPECT = 1.8;  // card width <= 1.8 x height
+
+function clamp(v, lo, hi) { return Math.min(hi, Math.max(lo, v)); }
+
+// Height of the title block + its margin in the reference layout (h1 3.6vh,
+// subtitle 1.9vh, small gaps).
+function refHeaderBlock(H) {
+  return clamp(0.036 * H, 19.2, 48) + 0.004 * H + clamp(0.019 * H, 12.8, 24) * 1.1 + 0.003 * H + 0.015 * H;
+}
+
+function layoutCompactCards(st, grid, cellW, cellH, cols, rows, gapX, gapY) {
+  const W = window.innerWidth, H = window.innerHeight;
+  const header = st.block.querySelector('.header').getBoundingClientRect().height
+    + parseFloat(getComputedStyle(st.wrap).marginTop);
+  // What this cell would measure in the reference layout.
+  const refW = cellW + (gapX - W * REF_GAP_X) * (cols - 1) / cols;
+  const refH = cellH + ((gapY - H * REF_GAP_Y) * (rows - 1) + (header - refHeaderBlock(H)) + H * ROW_GAP_EXTRA_VH / 2) / rows;
+
+  const padRef = Math.min(refW, refH) * 0.07;
+  const innerW = Math.max(40, refW - padRef * 2);
+  const innerH = Math.max(40, refH - padRef * 2);
+  const iconH0 = Math.min(innerH * 0.46, innerW * 0.36 / 1.5);  // reference flag: code/name sizes derive from it
+  let iconH = iconH0 * FLAG_SCALE;
   const colGap = innerW * 0.025;
-  const textW = Math.max(30, innerW - iconW - colGap);
+  let valueGap = innerH * 0.12;
+  let valueSize = innerH * 0.32;
+  const textW = Math.max(30, innerW - iconH0 * 1.5 - colGap);
+  let codeSize = Math.min(iconH0 * 0.40, textW / 3.4);
+  let nameSize = Math.min(iconH0 * 0.19, textW / 7);
+
+  // The real card is tighter than the reference one: only the padding shrinks,
+  // and it never gets wider than CARD_MAX_ASPECT x its height (a 2- or 3-card
+  // row would otherwise make long, flat strips): the cards are centred instead.
+  const pad = Math.min(cellW, cellH) * 0.02;
+  const cardW = Math.min(cellW, cellH * CARD_MAX_ASPECT);
+  grid.style.gridTemplateColumns = `repeat(${cols}, ${cardW}px)`;
+  grid.style.justifyContent = 'center';
+  // Safety: if the content would not fit the (smaller) card, scale it all down.
+  const need = iconH + valueGap + valueSize;
+  const have = cellH - pad * 2;
+  const k = need > have ? have / need : 1;
+  iconH *= k; valueGap *= k; valueSize *= k; codeSize *= k; nameSize *= k;
+
+  grid.style.setProperty('--card-pad', pad + 'px');
   grid.style.setProperty('--icon-h', iconH + 'px');
-  grid.style.setProperty('--icon-w', iconW + 'px');
-  grid.style.setProperty('--col-gap', colGap + 'px');
-  grid.style.setProperty('--text-max', textW + 'px');
-  grid.style.setProperty('--value-gap', innerH * 0.12 + 'px');
-  grid.style.setProperty('--code-size', Math.min(iconH * 0.40, textW / 3.4) + 'px');
-  grid.style.setProperty('--name-size', Math.min(iconH * 0.19, textW / 7) + 'px');
-  st.valueSize = innerH * 0.32;
-  grid.style.setProperty('--value-size', st.valueSize + 'px');
+  grid.style.setProperty('--icon-w', iconH * 1.5 + 'px');
+  grid.style.setProperty('--col-gap', colGap * k + 'px');
+  // The text column may only use what is left in the real (maybe narrower) card.
+  grid.style.setProperty('--text-max', Math.max(30, cardW - pad * 2 - iconH * 1.5 - colGap * k) + 'px');
+  grid.style.setProperty('--value-gap', valueGap + 'px');
+  grid.style.setProperty('--code-size', codeSize + 'px');
+  grid.style.setProperty('--name-size', nameSize + 'px');
+  st.valueSize = valueSize;
+  grid.style.setProperty('--value-size', valueSize + 'px');
   grid.querySelectorAll('.value').forEach(el => fitValueText(el, st.valueSize));
 }
 

@@ -20,7 +20,7 @@ from config import (
     APP_DIR, DATA_FILE, FLAGS_DIR, MAX_CODE_LEN, MAX_NAME_LEN, MAX_PRICE_VALUE, MAX_SUBTITLE_LEN,
     MAX_SYMBOL_LEN, MAX_TITLE_LEN, PALETTE_CHOICES,
 )
-from helpers.storage import MAX_ROW_CURRENCIES, ROWS, invalidate_cache, load_data, save_data
+from helpers.storage import MAX_ROW_CURRENCIES, ROWS, get_lan_ip, invalidate_cache, load_data, save_data
 from helpers.validation import clean_text, norm_price
 from helpers.version import APP_VERSION_STRING
 
@@ -96,6 +96,7 @@ def _get(url, max_bytes, insecure, token="", identify=False):
         headers["X-Client-Id"] = client_id()
         headers["X-Client-Name"] = socket.gethostname()
         headers["X-Client-Version"] = APP_VERSION_STRING
+        headers["X-Client-IP"] = get_lan_ip()  # informational: the server also sees the connection address
     with opener.open(urllib.request.Request(url, headers=headers), timeout=8) as resp:
         body = resp.read(max_bytes + 1)
     if len(body) > max_bytes:
