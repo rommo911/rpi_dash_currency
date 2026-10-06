@@ -48,13 +48,39 @@
     </form>
   </div>
 
+  <div class="settings-card">
+    <h2>{{ t.layout_heading }}</h2>
+    <form id="layout-form" method="post" action="{{ url_for('admin_layout') }}">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <div class="opts">
+        <button type="submit" name="layout" value="cards" class="opt {% if layout == 'cards' %}on{% endif %}" {% if layout == 'cards' %}aria-current="true"{% endif %}>
+          <b>{{ t.layout_cards }}</b>
+          <span class="mini cards"><i></i><i></i><i></i><i></i><i></i><i></i></span>
+          <span class="desc">{{ t.layout_cards_desc }}</span>
+        </button>
+        <button type="submit" name="layout" value="matrix" class="opt {% if layout == 'matrix' %}on{% endif %}" {% if layout == 'matrix' %}aria-current="true"{% endif %}>
+          <b>{{ t.layout_matrix }}</b>
+          <span class="mini matrix"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></span>
+          <span class="desc">{{ t.layout_matrix_desc }}</span>
+        </button>
+      </div>
+      <p class="sub">{{ t.layout_note }}</p>
+    </form>
+  </div>
+
   <!-- Standalone per-currency delete forms; the Remove button below links
        via form="..." (HTML5) instead of nesting inside the big save-all form. -->
+  {% if layout == 'matrix' %}
+  {% for c in matrix.currencies %}
+  <form id="delete-m-{{ c.code }}" method="post" action="{{ url_for('admin_matrix_delete', code=c.code) }}"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"></form>
+  {% endfor %}
+  {% else %}
   {% for r in rows %}{% set n = loop.index0 %}
   {% for c in r.currencies %}
   <form id="delete-{{ n }}-{{ c.code }}" method="post" action="{{ url_for('admin_delete_currency', row=n, code=c.code) }}"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"></form>
   {% endfor %}
   {% endfor %}
+  {% endif %}
 
   <form method="post" action="{{ url_for('admin_save_all') }}">
     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
@@ -81,6 +107,51 @@
       </div>
     </div>
 
+    {% if layout == 'matrix' %}
+    <div class="settings-card">
+      <h2>{{ t.matrix_currencies_heading }} ({{ min_row }}&ndash;{{ max_row }})</h2>
+      <p class="sub">{{ t.matrix_currencies_sub }}</p>
+      {% for c in matrix.currencies %}
+      <div class="row {% if not c.enabled %}disabled{% endif %}">
+        <div class="thumb">{% if c.flag %}<img src="{{ c.flag }}" alt="{{ c.name }} flag">{% endif %}</div>
+        <div class="code-badge">{{ c.code }}</div>
+        <div class="inline">
+          <input type="text" name="m_name_{{ c.code }}" value="{{ c.name }}" placeholder="{{ t.name_ph }}" maxlength="{{ max_name_len }}" required>
+          <input type="text" name="m_symbol_{{ c.code }}" value="{{ c.symbol }}" placeholder="{{ t.symbol_ph }}" maxlength="{{ max_symbol_len }}">
+          <label class="chk"><input type="checkbox" name="m_enabled_{{ c.code }}" {% if c.enabled %}checked{% endif %}> {{ t.enabled_label }}</label>
+        </div>
+        <button type="submit" form="delete-m-{{ c.code }}" class="delete" onclick="return confirm('{{ t.confirm_remove.format(code=c.code) }}');">{{ t.remove_btn }}</button>
+      </div>
+      {% endfor %}
+    </div>
+    {% for r in matrix.rows %}{% set n = loop.index0 %}
+    <div class="settings-card">
+      <h2>{{ t.row_heading.format(n=n + 1) }}</h2>
+      <div class="fields">
+        <label class="chk"><input type="checkbox" name="mr{{ n }}_enabled" {% if r.enabled %}checked{% endif %}> {{ t.matrix_row_enabled_label.format(min=matrix_min_rows) }}</label>
+      </div>
+      <div class="fields">
+        <div>
+          <label class="field-label" for="mr{{ n }}_title">{{ t.field_title }}</label>
+          <input type="text" id="mr{{ n }}_title" name="mr{{ n }}_title" value="{{ r.title }}" maxlength="{{ max_title_len }}">
+        </div>
+        <div>
+          <label class="field-label" for="mr{{ n }}_subtitle">{{ t.field_subtitle }}</label>
+          <input type="text" id="mr{{ n }}_subtitle" name="mr{{ n }}_subtitle" value="{{ r.subtitle }}" maxlength="{{ max_subtitle_len }}">
+        </div>
+      </div>
+      <h3>{{ t.matrix_prices_heading }}</h3>
+      <div class="fields prices">
+        {% for c in matrix.currencies %}
+        <div class="price-field {% if not c.enabled %}disabled{% endif %}">
+          <label class="field-label price-label" for="mr{{ n }}_price_{{ c.code }}">{% if c.flag %}<img src="{{ c.flag }}" alt="">{% endif %}{{ c.code }}</label>
+          <input type="text" inputmode="decimal" id="mr{{ n }}_price_{{ c.code }}" name="mr{{ n }}_price_{{ c.code }}" value="{{ r.prices[c.code] }}" oninput="filterDecimalInput(this)" placeholder="{{ t.price_ph }}">
+        </div>
+        {% endfor %}
+      </div>
+    </div>
+    {% endfor %}
+    {% else %}
     {% for r in rows %}{% set n = loop.index0 %}
     <div class="settings-card">
       <h2>{{ t.row_heading.format(n=n + 1) }}</h2>
@@ -110,10 +181,33 @@
     </div>
     {% endfor %}
     {% endfor %}
+    {% endif %}
 
     <div style="margin-top:20px;"><button type="submit" class="save">{{ t.save_settings }}</button></div>
   </form>
 
+  {% if layout == 'matrix' %}
+  {% if matrix.currencies|length < max_row %}
+  <div class="add-card">
+    <h2>{{ t.matrix_add_heading }}</h2>
+    <form method="post" action="{{ url_for('admin_matrix_add') }}" enctype="multipart/form-data">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <div class="fields">
+        <input type="text" name="code" placeholder="{{ t.code_ph }}" maxlength="{{ max_code_len }}" required>
+        <input type="text" name="name" placeholder="{{ t.name_req_ph }}" maxlength="{{ max_name_len }}" required>
+        <input type="text" name="symbol" placeholder="{{ t.symbol_opt_ph }}" maxlength="{{ max_symbol_len }}">
+        <input type="text" inputmode="decimal" name="price" placeholder="{{ t.matrix_price_all_ph }}" oninput="filterDecimalInput(this)" required>
+      </div>
+      <div class="flag-choice">
+        <label><input type="radio" name="flag_source" value="auto" checked> {{ t.flag_auto }}</label>
+        <label><input type="radio" name="flag_source" value="upload"> {{ t.flag_upload }}</label>
+      </div>
+      <input type="file" name="flag_file" accept="image/*">
+      <div style="margin-top:16px;"><button type="submit" class="save">{{ t.add_btn }}</button></div>
+    </form>
+  </div>
+  {% endif %}
+  {% else %}
   {% for r in rows %}{% set n = loop.index0 %}
   {% if r.currencies|length < max_row %}
   <div class="add-card">
@@ -137,6 +231,7 @@
 
   {% endif %}
   {% endfor %}
+  {% endif %}
 
   <a class="back" href="/">{{ t.back_link }}</a>
 

@@ -37,3 +37,15 @@ function filterDecimalInput(el) {
   }));
   sync();
 })();
+
+// Layout chooser: switching reloads the page, so ask first if the form has unsaved edits.
+(function () {
+  const lf = document.getElementById('layout-form');
+  const main = document.querySelector('form[action$="/admin/save-all"]');
+  if (!lf || !main) return;
+  let dirty = false;
+  main.addEventListener('input', () => { dirty = true; });
+  lf.addEventListener('submit', e => {
+    if (dirty && !confirm(document.body.dataset.discardMsg || 'Unsaved changes will be lost. Switch anyway?')) e.preventDefault();
+  });
+})();

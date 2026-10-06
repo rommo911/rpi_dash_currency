@@ -22,6 +22,11 @@ ROWS = 2
 # file that OTA updates must not depend on (an old copy would lack new names).
 MIN_ROW_CURRENCIES = 2
 MAX_ROW_CURRENCIES = 4
+# Layouts: "cards" = up to ROWS independent rows; "matrix" = MATRIX_ROWS rows
+# (at least MATRIX_MIN_ROWS enabled) sharing ONE currency list, each with its own prices.
+LAYOUTS = ("cards", "matrix")
+MATRIX_ROWS = 3
+MATRIX_MIN_ROWS = 2
 
 
 def default_rows():
@@ -39,6 +44,7 @@ DEFAULT_SETTINGS = {
     "admin_language": "ar",
     "show_updated_at": True,
     "color_palette": DEFAULT_PALETTE,
+    "layout": "cards",
     # Per-effect toggles (dashboard.css fx-* classes), default True — lets
     # a weak board drop just the expensive ones (e.g. glass blur).
     "fx_glass": True,
@@ -58,10 +64,78 @@ def invalidate_cache():
     _data_cache.update(mtime=None, data=None)
 
 
+_DEF_KEYS = ("code", "name", "symbol", "flag", "flag_src", "enabled")
+
+
+def rows_to_matrix(rows):
+    """Matrix data seeded from card rows: the shared currency list is row 1's, every row keeps the
+    prices it had for those codes (row 3 starts as a disabled copy of row 1)."""
+    first = rows[0]["currencies"][:MAX_ROW_CURRENCIES]
+    defs = [{k: c[k] for k in _DEF_KEYS if k in c} for c in first]
+    base = {c["code"]: c.get("price", 0) for c in first}
+    src = list(rows[:MATRIX_ROWS])
+    given = len(src)
+    while len(src) < MATRIX_ROWS:
+        src.append(rows[0])
+    out = []
+    for n, r in enumerate(src):
+        have = {c["code"]: c.get("price", 0) for c in r["currencies"]}
+        out.append({"enabled": bool(r["enabled"]) and n < given, "title": r["title"], "subtitle": r["subtitle"],
+                    "prices": {c["code"]: have.get(c["code"], base.get(c["code"], 0)) for c in defs}})
+    return {"currencies": defs, "rows": out}
+
+
+def norm_matrix(m):
+    m = m if isinstance(m, dict) else {}
+    defs, seen = [], set()
+    for c in m.get("currencies") or []:
+        if isinstance(c, dict) and c.get("code") and c["code"] not in seen and len(defs) < MAX_ROW_CURRENCIES:
+            seen.add(c["code"])
+            d = {k: c[k] for k in _DEF_KEYS if k in c}
+            d["enabled"] = bool(d.get("enabled", True))
+            defs.append(d)
+    rows = []
+    for r in (m.get("rows") or [])[:MATRIX_ROWS]:
+        r = r if isinstance(r, dict) else {}
+        pr = r.get("prices") if isinstance(r.get("prices"), dict) else {}
+        rows.append({"enabled": bool(r.get("enabled", False)), "title": str(r.get("title") or ""),
+                     "subtitle": str(r.get("subtitle") or ""),
+                     "prices": {c["code"]: _num(pr.get(c["code"])) for c in defs}})
+    while len(rows) < MATRIX_ROWS:
+        rows.append({"enabled": False, "title": "", "subtitle": "", "prices": {c["code"]: 0 for c in defs}})
+    return {"currencies": defs, "rows": rows}
+
+
+def _num(v):
+    return v if isinstance(v, (int, float)) and not isinstance(v, bool) else 0
+
+
+def matrix_to_rows(m):
+    """Matrix as card-style rows (each carries the shared currencies with its own prices)."""
+    return [{"enabled": r["enabled"], "title": r["title"], "subtitle": r["subtitle"],
+             "currencies": [{**c, "price": r["prices"].get(c["code"], 0)} for c in m["currencies"]]} for r in m["rows"]]
+
+
+def ensure_min_matrix_rows(m):
+    """A matrix needs MATRIX_MIN_ROWS enabled rows (with a title): switch on the first idle ones."""
+    for i, r in enumerate(m["rows"]):
+        if sum(x["enabled"] for x in m["rows"]) >= MATRIX_MIN_ROWS:
+            break
+        if not r["enabled"]:
+            r["enabled"] = True
+            r["title"] = r["title"] or f"Row {i + 1}"
+
+
+def effective_rows(data):
+    """The rows actually shown, whatever the layout."""
+    return matrix_to_rows(data["matrix"]) if data["settings"]["layout"] == "matrix" else data["rows"]
+
+
 def mirror_legacy(data):
     """Old code (and old dashboards pulling this file's shape) reads the flat
     `currencies` + settings.title/subtitle: keep them equal to the first enabled row."""
-    first = next((r for r in data["rows"] if r["enabled"]), data["rows"][0])
+    rows = effective_rows(data)
+    first = next((r for r in rows if r["enabled"]), rows[0])
     data["settings"]["title"] = first["title"]
     data["settings"]["subtitle"] = first["subtitle"]
     data["currencies"] = first["currencies"]
@@ -71,7 +145,9 @@ def normalize_rows(data):
     """Make data["rows"] exactly ROWS well-formed rows. Files without `rows`
     (every pre-two-row install) become row 1 = old list, row 2 = disabled.
     Returns True if anything changed."""
-    before = json.dumps(data.get("rows"), sort_keys=True)
+    before = json.dumps([data.get("rows"), data.get("matrix"), data["settings"].get("layout")], sort_keys=True)
+    if data["settings"].get("layout") not in LAYOUTS:
+        data["settings"]["layout"] = "cards"
     rows = data.get("rows")
     if not isinstance(rows, list) or not rows:
         st = data["settings"]
@@ -93,8 +169,18 @@ def normalize_rows(data):
     if not any(r["enabled"] for r in out):
         out[0]["enabled"] = True
     data["rows"] = out
+    # The matrix is created on first use (seeded from the card rows) and kept separately afterwards,
+    # so switching layouts never overwrites the other one's data.
+    if isinstance(data.get("matrix"), dict):
+        data["matrix"] = norm_matrix(data["matrix"])
+    elif data["settings"]["layout"] == "matrix":
+        data["matrix"] = norm_matrix(rows_to_matrix(out))
+    else:
+        data.pop("matrix", None)
+    if data["settings"]["layout"] == "matrix":
+        ensure_min_matrix_rows(data["matrix"])
     mirror_legacy(data)
-    return json.dumps(out, sort_keys=True) != before
+    return json.dumps([data["rows"], data.get("matrix"), data["settings"]["layout"]], sort_keys=True) != before
 
 
 def load_data():
@@ -211,6 +297,13 @@ def get_lan_ip():
             return "127.0.0.1"
     finally:
         s.close()
+
+
+def find_matrix_currency(data, code):
+    for c in data["matrix"]["currencies"]:
+        if c["code"] == code:
+            return c
+    return None
 
 
 def find_currency(data, row, code):

@@ -20,7 +20,10 @@ from config import (
     APP_DIR, DATA_FILE, FLAGS_DIR, MAX_CODE_LEN, MAX_NAME_LEN, MAX_PRICE_VALUE, MAX_SUBTITLE_LEN,
     MAX_SYMBOL_LEN, MAX_TITLE_LEN, PALETTE_CHOICES,
 )
-from helpers.storage import MAX_ROW_CURRENCIES, ROWS, get_lan_ip, invalidate_cache, load_data, save_data
+from helpers.storage import (
+    LAYOUTS, MATRIX_ROWS, MAX_ROW_CURRENCIES, ROWS, get_lan_ip, invalidate_cache, load_data, norm_matrix,
+    rows_to_matrix, save_data,
+)
 from helpers.validation import clean_text, norm_price
 from helpers.version import APP_VERSION_STRING
 
@@ -128,8 +131,13 @@ def validate_payload(obj):
                 "show_updated_at": bool(s.get("show_updated_at", True))}
     for k in FX_KEYS:
         settings[k] = bool(s.get(k, True))
+    # Servers without the matrix layout send no `layout`: that means cards.
+    settings["layout"] = s["layout"] if s.get("layout") in LAYOUTS else "cards"
+    max_rows = MATRIX_ROWS if settings["layout"] == "matrix" else ROWS
 
     rows_in = obj.get("rows")
+    if isinstance(rows_in, list) and isinstance(obj.get("more_rows"), list):
+        rows_in = rows_in + obj["more_rows"]  # the matrix layout's 3rd row (kept out of `rows` for old dashboards)
     if rows_in is None:
         # Server without two-row support: its flat list becomes row 1, row 2 stays off.
         rows_in = [{"enabled": True, "title": title, "subtitle": subtitle, "currencies": obj.get("currencies")},
@@ -137,8 +145,8 @@ def validate_payload(obj):
         limit = MAX_CURRENCIES
     else:
         limit = MAX_ROW_CURRENCIES
-    if not isinstance(rows_in, list) or not 1 <= len(rows_in) <= ROWS:
-        return None, f"rows must be a list of 1..{ROWS}"
+    if not isinstance(rows_in, list) or not 1 <= len(rows_in) <= max_rows:
+        return None, f"rows must be a list of 1..{max_rows}"
     rows = []
     for n, r in enumerate(rows_in):
         if not isinstance(r, dict):
@@ -155,6 +163,8 @@ def validate_payload(obj):
         rows.append({"enabled": False, "title": "", "subtitle": "", "currencies": []})
     if not any(r["enabled"] for r in rows):
         rows[0]["enabled"] = True
+    if settings["layout"] == "matrix" and len(rows[0]["currencies"]) < 1:
+        return None, "matrix layout needs currencies in row 1"
     return {"version": version, "settings": settings, "rows": rows}, None
 
 
@@ -222,9 +232,10 @@ def _sync_flag(code, flag_src, old, insecure):
 
 
 def apply_payload(clean, insecure):
-    """Overwrite settings and both rows from a validated payload."""
+    """Overwrite settings and the active layout's rows from a validated payload."""
     data = load_data()
     old_by_code = {c["code"]: c for r in data["rows"] for c in r["currencies"]}
+    old_by_code.update({c["code"]: c for c in data.get("matrix", {}).get("currencies", [])})
     rows = []
     for r in clean["rows"]:
         currencies = []
@@ -236,7 +247,10 @@ def apply_payload(clean, insecure):
     keep = data["settings"].get("admin_language")
     data["settings"].update(clean["settings"])
     data["settings"]["admin_language"] = keep
-    data["rows"] = rows
+    if clean["settings"]["layout"] == "matrix":
+        data["matrix"] = norm_matrix(rows_to_matrix(rows))
+    else:
+        data["rows"] = rows
     save_data(data)
 
 

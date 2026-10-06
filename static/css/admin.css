@@ -148,3 +148,35 @@ a.back:hover { color: var(--text-main); }
   color: var(--text-main);
   font-weight: 700;
 }
+
+/* Layout chooser (cards / matrix): two big option buttons with a tiny preview. */
+.opts { display: flex; gap: 14px; flex-wrap: wrap; margin-bottom: 14px; }
+.opt {
+  flex: 1 1 260px;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 10px;
+  text-align: start;
+  font-weight: 400;
+  padding: 16px;
+  border-radius: 14px;
+  border: 2px solid var(--card-border);
+  background: rgba(255,255,255,0.03);
+  color: var(--text-main);
+}
+.opt:hover { border-color: rgba(34,211,238,0.5); }
+.opt.on { border-color: var(--accent); background: rgba(34,211,238,0.10); }
+.opt b { font-size: 1rem; }
+.opt .desc { color: var(--text-dim); font-size: 0.85rem; line-height: 1.4; }
+.mini { display: grid; gap: 3px; width: 96px; height: 48px; padding: 5px; border-radius: 7px; background: rgba(255,255,255,0.06); }
+.mini.cards { grid-template-columns: repeat(3, 1fr); grid-template-rows: 1fr 1fr; }
+.mini.matrix { grid-template-columns: 1.6fr 1fr 1fr 1fr; grid-template-rows: repeat(3, 1fr); }
+.mini i { background: var(--accent); border-radius: 2px; opacity: 0.7; }
+.opt:not(.on) .mini i { opacity: 0.35; }
+/* Matrix row prices: one labelled input per shared currency. */
+.fields.prices { gap: 14px; }
+.price-field.disabled { opacity: 0.55; }
+.price-label { display: flex; align-items: center; gap: 6px; }
+.price-label img { width: 22px; height: 15px; object-fit: cover; border-radius: 3px; }
+.price-field input[type=text] { width: 130px; }

@@ -82,12 +82,82 @@ body {
   display: flex;
   flex-direction: column;
 }
+#rows[hidden] { display: none; }
 .row-block {
   flex: 1 1 0;
   min-height: 0;
   display: flex;
   flex-direction: column;
 }
+/* ---- Matrix layout: shared currency columns, one band per row (sizes come from layoutMatrix() in dashboard.js) ---- */
+#matrix {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+#matrix[hidden] { display: none; }
+.m-head, .m-row {
+  display: grid;
+  grid-template-columns: var(--m-cols, 1fr);
+  column-gap: var(--m-gap, 24px);
+  align-items: center;
+}
+.m-head { flex: 0 0 auto; align-items: end; padding-bottom: var(--m-head-pad, 12px); }
+.m-col { display: flex; flex-direction: column; align-items: center; gap: var(--m-head-gap, 8px); min-width: 0; text-align: center; }
+.m-col .icon-badge { width: auto; height: auto; border-radius: 8px; }
+.m-code {
+  font-size: var(--m-code, 1.8rem);
+  font-weight: 900;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  line-height: 1;
+}
+.m-name {
+  font-size: var(--m-name, 1rem);
+  color: var(--text-dim);
+  line-height: 1.2;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.m-row { flex: 1 1 0; min-height: 0; position: relative; }
+/* Same fading accent divider as between two card rows. */
+.m-row::before {
+  content: '';
+  position: absolute;
+  top: 0; left: 0; right: 0;
+  height: 4px;
+  border-radius: 2px;
+  background: linear-gradient(90deg, transparent, rgba(var(--accent-rgb), 0.55) 12%, rgba(var(--accent-rgb), 0.55) 88%, transparent);
+  pointer-events: none;
+}
+.m-title { min-width: 0; display: flex; flex-direction: column; gap: 0.3em; overflow: hidden; text-align: start; }
+.m-h { font-size: var(--m-title, 1.6rem); font-weight: 800; line-height: 1.12; overflow-wrap: anywhere; }
+.m-sub { font-size: var(--m-sub, 1rem); color: var(--text-dim); line-height: 1.2; }
+.m-sub:empty { display: none; }
+.m-val {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: var(--m-price, 3rem);
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  color: var(--accent);
+  line-height: 1;
+  white-space: nowrap;
+  direction: ltr;  /* digits stay left-to-right even in the Arabic (rtl) table */
+}
+body.fx-glow .m-val { animation: valueGlow var(--glow-duration) ease-in-out infinite; }
+body.fx-flash .m-val.flash { animation: matrixFlash var(--flash-duration) ease-out; }
+@keyframes matrixFlash {
+  0%   { transform: scale(1); text-shadow: 0 0 28px rgba(var(--accent-rgb), 0.95); }
+  25%  { transform: scale(1.08); text-shadow: 0 0 22px rgba(var(--accent-rgb), 0.8); }
+  100% { transform: scale(1); text-shadow: 0 0 0 rgba(var(--accent-rgb), 0); }
+}
+
 /* Fixed height regardless of text length — long text shrinks via clamp(). */
 .header {
   flex: 0 0 auto;
@@ -329,7 +399,7 @@ body.fx-glow .card .value {
 /* Courtesy override for anyone with reduced-motion set, regardless of
    the admin panel's own per-effect toggles above. */
 @media (prefers-reduced-motion: reduce) {
-  .card::before, .card::after, .card .value, .card.flash {
+  .card::before, .card::after, .card .value, .card.flash, .m-val, .m-val.flash {
     animation: none !important;
   }
 }

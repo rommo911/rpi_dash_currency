@@ -212,7 +212,141 @@ function layoutCompactCards(st, grid, cellW, cellH, cols, rows, gapX, gapY) {
 }
 
 function layoutAll() {
-  rowStates.forEach(layoutGrid);
+  if (matrixState) layoutMatrix();
+  else rowStates.forEach(layoutGrid);
+}
+
+// ---------------------------------------------------------------------------
+// Matrix layout: ONE currency list shared by 2-3 rows. The flag/code/name of
+// each currency appear once as a column head; every row is a band with its own
+// title + subtitle and one price per column. Arabic mirrors it (dir=rtl on the
+// container: the title column and the first currency start from the right).
+// ---------------------------------------------------------------------------
+const MATRIX_REF_W = 896, MATRIX_REF_H = 508;  // the design's 960x540 screen minus its padding
+let matrixState = null;  // {head, rows:[{el, titleEl, subEl, titleBox, vals:[el]}], flags, names, codes}
+
+function showLayout(mode) {
+  const matrix = mode === 'matrix';
+  const rowsRoot = document.getElementById('rows');
+  const mRoot = document.getElementById('matrix');
+  rowsRoot.hidden = matrix;
+  mRoot.hidden = !matrix;
+  if (matrix && rowStates.length) { rowsRoot.innerHTML = ''; rowStates = []; }
+  if (!matrix && matrixState) { mRoot.innerHTML = ''; matrixState = null; }
+}
+
+function mEl(tag, cls, text) {
+  const el = document.createElement(tag);
+  if (cls) el.className = cls;
+  if (text !== undefined) el.textContent = text;
+  return el;
+}
+
+// Rebuilds the whole matrix: it only runs when the data changed (not every poll)
+// and there are at most 3 x 4 cells, so no incremental DOM bookkeeping is needed.
+function renderMatrix(rows, rtl, fxFlash) {
+  const root = document.getElementById('matrix');
+  root.dir = rtl ? 'rtl' : 'ltr';
+  const cols = (rows[0] && rows[0].currencies || []).slice(0, MAX_DISPLAYED_CURRENCIES);
+  root.innerHTML = '';
+  matrixState = null;
+  if (!cols.length) {
+    root.appendChild(mEl('div', 'empty', 'No currencies enabled. Add or enable some from the control panel.'));
+    return;
+  }
+  const head = mEl('div', 'm-head');
+  head.appendChild(mEl('div', 'm-corner'));
+  const flags = [], names = [], codes = [];
+  cols.forEach(c => {
+    const col = mEl('div', 'm-col');
+    const badge = mEl('div', 'icon-badge');
+    const src = safeFlagSrc(c.flag);
+    if (src) {
+      const img = document.createElement('img');
+      img.setAttribute('src', src);
+      img.alt = `${c.name} flag`;
+      badge.appendChild(img);
+    }
+    const code = mEl('div', 'm-code', c.code);
+    const name = mEl('div', 'm-name', c.name);
+    col.append(badge, code, name);
+    head.appendChild(col);
+    flags.push(badge); codes.push(code); names.push(name);
+  });
+  root.appendChild(head);
+
+  const rowEls = rows.map((row, ri) => {
+    const el = mEl('div', 'm-row');
+    const titleBox = mEl('div', 'm-title');
+    const titleEl = mEl('div', 'm-h', row.title || '');
+    const subEl = mEl('div', 'm-sub', row.subtitle || '');
+    titleBox.append(titleEl, subEl);
+    el.appendChild(titleBox);
+    const vals = cols.map(c => {
+      const match = (row.currencies || []).find(x => x.code === c.code);
+      const v = mEl('div', 'm-val');
+      v.appendChild(mEl('span', '', match ? `${match.symbol || ''}${fmt(match.price)}` : '—'));
+      const key = `m${ri}:${c.code}`;
+      const price = match ? match.price : undefined;
+      if (fxFlash && price !== undefined && lastPrices[key] !== undefined && lastPrices[key] !== price) {
+        v.classList.add('flash');
+        v.addEventListener('animationend', () => v.classList.remove('flash'), { once: true });
+      }
+      lastPrices[key] = price;
+      return v;
+    });
+    vals.forEach(v => el.appendChild(v));
+    root.appendChild(el);
+    return { el, titleEl, subEl, titleBox, vals };
+  });
+  matrixState = { head, rows: rowEls, flags, names, codes, n: cols.length };
+}
+
+function layoutMatrix() {
+  const st = matrixState;
+  if (!st) return;
+  const root = document.getElementById('matrix');
+  const W = root.clientWidth, H = root.clientHeight;
+  if (!W || !H) return;
+  const k = Math.min(W / MATRIX_REF_W, H / MATRIX_REF_H);
+  const titleW = W * 0.335;
+  const gap = Math.max(12, W * 0.03);  // distance between currency columns
+  const colW = (W - titleW - gap * st.n) / st.n;
+  root.style.setProperty('--m-cols', `${titleW}px repeat(${st.n}, minmax(0, 1fr))`);
+  root.style.setProperty('--m-gap', gap + 'px');
+
+  // Flag as big as the column allows, code + name under it.
+  const flagW = Math.min(colW * 0.42, 110 * k, colW * 0.9);
+  st.flags.forEach(f => { f.style.width = flagW + 'px'; f.style.height = flagW / 1.5 + 'px'; });
+  root.style.setProperty('--m-code', Math.min(30 * k, colW / 4.2) + 'px');
+  root.style.setProperty('--m-name', Math.min(15 * k, colW / 8) + 'px');
+  root.style.setProperty('--m-head-gap', 8 * k + 'px');
+  root.style.setProperty('--m-head-pad', 12 * k + 'px');
+
+  // Rows share the rest of the height; with fewer rows the text may grow a little.
+  const headH = st.head.getBoundingClientRect().height;
+  const rowH = (H - headH) / st.rows.length;
+  const grow = clamp(rowH / (125 * k), 1, 1.35);
+  // Tall (portrait) screens give the rows lots of height: titles may grow more there.
+  const growT = clamp(rowH / (125 * k), 1, H > W ? 1.8 : 1.35);
+  const titleSize = 30 * k * growT, subSize = 15.5 * k * growT;
+  // One price size for the whole table (the longest value sets it).
+  let longest = 1;
+  st.rows.forEach(r => r.vals.forEach(v => { longest = Math.max(longest, v.textContent.trim().length); }));
+  const priceSize = Math.min(64 * k * grow, (colW / longest) * 1.55, rowH * 0.8);
+  root.style.setProperty('--m-price', priceSize + 'px');
+  root.style.setProperty('--m-title', titleSize + 'px');
+  root.style.setProperty('--m-sub', subSize + 'px');
+
+  // Long titles wrap; shrink until the title block fits its band.
+  st.rows.forEach(r => {
+    let t = titleSize, s = subSize;
+    r.titleEl.style.fontSize = t + 'px'; r.subEl.style.fontSize = s + 'px';
+    for (let i = 0; i < 12 && r.titleBox.scrollHeight > rowH * 0.92 && t > 11; i++) {
+      t *= 0.92; s *= 0.92;
+      r.titleEl.style.fontSize = t + 'px'; r.subEl.style.fontSize = s + 'px';
+    }
+  });
 }
 
 // buildCard — one-time DOM build for a new currency, via innerHTML so
@@ -369,12 +503,19 @@ async function refresh() {
     document.body.classList.toggle('fx-glow', !!d.fx_glow);
 
     const rows = d.rows || [{ title: d.title, subtitle: d.subtitle, currencies: d.currencies }];
-    let relayout = ensureRows(rows.length);
-    rows.forEach((row, i) => {
-      if (renderRow(rowStates[i], i, row, d.fx_flash)) relayout = true;
-    });
-    if (relayout) {
-      layoutAll(); // re-measures every card — only worth it when the set changed
+    if (d.layout === 'matrix') {
+      showLayout('matrix');
+      renderMatrix(rows, d.admin_language === 'ar', d.fx_flash);
+      layoutMatrix();
+    } else {
+      showLayout('cards');
+      let relayout = ensureRows(rows.length);
+      rows.forEach((row, i) => {
+        if (renderRow(rowStates[i], i, row, d.fx_flash)) relayout = true;
+      });
+      if (relayout) {
+        layoutAll(); // re-measures every card — only worth it when the set changed
+      }
     }
 
     document.getElementById('footer').hidden = !d.show_updated_at;

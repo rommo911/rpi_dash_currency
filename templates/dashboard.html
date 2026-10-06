@@ -9,6 +9,7 @@
 <body class="{% if settings.fx_glass %}fx-glass {% endif %}{% if settings.fx_scan %}fx-scan {% endif %}{% if settings.fx_flash %}fx-flash {% endif %}{% if settings.fx_glow %}fx-glow{% endif %}">
 <div class="screen">
   <div id="rows"></div>
+  <div id="matrix" hidden></div>
 
   <div class="footer" id="footer" {% if not settings.show_updated_at %}hidden{% endif %}><div id="updated-at">Loading&hellip;</div></div>
 </div>
