@@ -277,6 +277,9 @@ function renderMatrix(rows, rtl, fxFlash) {
 
   const rowEls = rows.map((row, ri) => {
     const el = mEl('div', 'm-row');
+    if (ri === 2) el.classList.add('third', 'p-top', 'p-bot');
+    else if (ri === 0) el.classList.add('p-top', ...(rows.length > 1 ? ['p-span'] : []));
+    else el.classList.add('p-skip');
     const titleBox = mEl('div', 'm-title');
     const titleEl = mEl('div', 'm-h', row.title || '');
     const subEl = mEl('div', 'm-sub', row.subtitle || '');
@@ -325,7 +328,11 @@ function layoutMatrix() {
 
   // Rows share the rest of the height; with fewer rows the text may grow a little.
   const headH = st.head.getBoundingClientRect().height;
-  const rowH = (H - headH) / st.rows.length;
+  // Third row sits a little further from the first two.
+  const split = st.rows.length > 2 ? 30 * k : 0;
+  root.style.setProperty('--m-pad', 28 * k + 'px');
+  const rowH = (H - headH - split) / st.rows.length;
+  if (st.rows[2]) st.rows[2].el.style.marginTop = split + 'px';
   const grow = clamp(rowH / (125 * k), 1, 1.35);
   // Tall (portrait) screens give the rows lots of height: titles may grow more there.
   const growT = clamp(rowH / (125 * k), 1, H > W ? 1.8 : 1.35);
